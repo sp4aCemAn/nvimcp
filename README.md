@@ -51,7 +51,9 @@ By default the server starts automatically (`autostart = true`).
 `proxy/nvimcp-proxy.py` (Python stdlib only) finds your nvim session
 automatically: `--socket` wins; else `--pid` picks from the sessions file; else
 the session whose nvim cwd matches the directory the client was launched
-from; else the only running session. Sessions are discovered from
+from, or the closest ancestor/descendant of it (nvim at the repo root, client
+in a subdir); else the only running session. Entries left behind by crashed
+nvim sessions are detected by pid and ignored. Sessions are discovered from
 `$XDG_RUNTIME_DIR/nvimcp/sessions.json`; on macOS (where that variable is
 unset) the proxy scans `<TMPDIR>/nvim.*/<random>/nvimcp/sessions.json`
 instead, since nvim's per-process runtime directory is not a stable path

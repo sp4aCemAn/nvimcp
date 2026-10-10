@@ -458,9 +458,49 @@ class NvimcpProxy:
                     if p not in paths:
                         paths.append(p)
             return paths
+        return ["/run/user/%d/nvimcp/sessions.json" % os.getuid()]
 
     def _describe(self, entries):
         return ", ".join("pid %s (%s)" % (e.get("pid"), e.get("cwd", "?")) for e in entries)
+
+    def _session_alive(self, entry):
+        pid = entry.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            return True
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True
+        return True
+
+    def _related(self, session_cwd, cli_cwd):
+        if not session_cwd or not cli_cwd:
+            return False
+        s = os.path.realpath(session_cwd)
+        c = os.path.realpath(cli_cwd)
+        if s == c:
+            return True
+        common = os.path.commonpath([s, c])
+        return common == s or common == c
+
+    def _rank(self, entry, cli_cwd):
+        s = entry.get("cwd")
+        if not s:
+            return 99
+        s = os.path.realpath(s)
+        c = os.path.realpath(cli_cwd)
+        if s == c:
+            return 0
+        common = os.path.commonpath([s, c])
+        if common not in (s, c):
+            return 99
+
+        def depth(p):
+            return len([x for x in os.path.relpath(p, common).split(os.sep) if x not in (".", "")])
+
+        return depth(s) + depth(c)
 
     def _discover(self):
         if self.socket_arg:
@@ -487,6 +527,11 @@ class NvimcpProxy:
                 if isinstance(e, dict) and isinstance(e.get("socket"), str) and e["socket"] not in seen_sockets:
                     seen_sockets.add(e["socket"])
                     entries.append(e)
+        alive = [e for e in entries if self._session_alive(e)]
+        if len(alive) < len(entries):
+            dead = [e for e in entries if e not in alive]
+            self._log("ignoring dead sessions: %s" % self._describe(dead))
+            entries = alive
         if self.pid_arg is not None:
             for e in entries:
                 if e.get("pid") == self.pid_arg:
@@ -500,6 +545,15 @@ class NvimcpProxy:
         if len(cwd_hits) > 1:
             self._warn("multiple sessions in this directory; picking pid %s" % cwd_hits[0].get("pid"))
             return cwd_hits[0]
+        related = [e for e in entries if self._related(e.get("cwd"), cwd)]
+        related.sort(key=lambda e: self._rank(e, cwd))
+        if related:
+            if len(related) > 1 and self._rank(related[0], cwd) == self._rank(related[1], cwd):
+                self._warn(
+                    "several sessions related to %s; picking pid %s (pass --pid or --socket to pin)"
+                    % (cwd, related[0].get("pid"))
+                )
+            return related[0]
         if len(entries) == 1:
             return entries[0]
         if not entries:
