@@ -38,17 +38,42 @@ local function sessions_read()
 end
 
 local function sessions_write(data)
-	local f = M.sessions_path()
-	vim.fn.writefile({ vim.json.encode(data) }, f)
-	vim.uv.fs_chmod(f, 384)
+	local path = M.sessions_path()
+	local tmp = path .. string.format(".%d.tmp", vim.fn.getpid())
+	local fh, err = vim.uv.fs_open(tmp, "w", 384)
+	if not fh then
+		vim.notify("[nvimcp] sessions write failed: " .. tostring(err), vim.log.levels.WARN)
+		return
+	end
+	local _, werr = vim.uv.fs_write(fh, vim.json.encode(data) .. "\n")
+	vim.uv.fs_close(fh)
+	if werr then
+		vim.notify("[nvimcp] sessions write failed: " .. tostring(werr), vim.log.levels.WARN)
+		pcall(vim.uv.fs_unlink, tmp)
+		return
+	end
+	local _, rerr = vim.uv.fs_rename(tmp, path)
+	if rerr then
+		vim.notify("[nvimcp] sessions write failed: " .. tostring(rerr), vim.log.levels.WARN)
+		pcall(vim.uv.fs_unlink, tmp)
+	end
 end
 
 local function sessions_update()
 	if not config.options.write_sessions then
 		return
 	end
+	local me = tostring(vim.fn.getpid())
 	local data = sessions_read()
-	data[tostring(vim.fn.getpid())] = {
+	for k, entry in pairs(data) do
+		if k ~= me then
+			local entry_socket = type(entry) == "table" and entry.socket
+			if not entry_socket or vim.uv.fs_stat(entry_socket) == nil then
+				data[k] = nil
+			end
+		end
+	end
+	data[me] = {
 		pid = vim.fn.getpid(),
 		socket = sock,
 		cwd = vim.uv.cwd(),
@@ -70,6 +95,16 @@ local function sessions_remove()
 	end
 end
 
+local function arm_exit_cleanup()
+	vim.api.nvim_create_augroup("nvimcp", { clear = true })
+	vim.api.nvim_create_autocmd("VimLeavePre", {
+		group = "nvimcp",
+		callback = function()
+			M.stop()
+		end,
+	})
+end
+
 function M.start()
 	local dir = ensure_dir()
 	local path = dir .. string.format("/nvimcp-%d.sock", vim.fn.getpid())
@@ -83,7 +118,8 @@ function M.start()
 	end
 	sock = addr
 	vim.uv.fs_chmod(sock, 384)
-	sessions_update()
+	arm_exit_cleanup()
+	pcall(sessions_update)
 	return sock
 end
 
@@ -92,8 +128,10 @@ function M.stop()
 		return true
 	end
 	pcall(vim.fn.serverstop, sock)
-	sessions_remove()
+	pcall(sessions_remove)
+	pcall(vim.api.nvim_del_augroup_by_name, "nvimcp")
 	sock = nil
+	call_times = {}
 	return true
 end
 
@@ -133,12 +171,12 @@ local function handle(method, params)
 end
 
 function M.rpc(method, params)
+	if not sock then
+		return { error = "nvimcp not started in this session" }
+	end
 	local ok, allowed, count = pcall(rate_ok)
 	if ok and not allowed then
 		return { error = ("rate limit exceeded (%d calls in window)"):format(count) }
-	end
-	if not sock then
-		return { error = "nvimcp not started in this session" }
 	end
 	local ok2, res = pcall(handle, method, params)
 	if not ok2 then

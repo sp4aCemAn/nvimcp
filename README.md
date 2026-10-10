@@ -78,7 +78,8 @@ Buffers:
 - `buffer_edit` — replace a line range; refuses modified or readonly buffers
   unless `force=true`, never touches non-modifiable buffers; `end_line` may
   exceed the line count to append
-- `buffer_search` — literal string search (or Lua pattern with `regex=true`)
+- `buffer_search` — literal string search (or Lua pattern with `regex=true`);
+  caps at 200 matches, `truncated=true` means there may be more
 
 LSP:
 

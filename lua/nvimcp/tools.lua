@@ -21,7 +21,12 @@ function M.load_builtins()
 	end
 	require("nvimcp.tools.lsp").register()
 	if config.options.terminals.enabled then
-		require("nvimcp.tools.term").register()
+		local ok, term = pcall(require, "nvimcp.tools.term")
+		if ok then
+			term.register()
+		else
+			vim.notify("[nvimcp] terminals.enabled is set but nvimcp.tools.term is not available (phase 3)", vim.log.levels.WARN)
+		end
 	end
 end
 

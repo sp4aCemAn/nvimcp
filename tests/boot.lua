@@ -7,9 +7,12 @@ nvimcp.setup({ autostart = false })
 assert(nvimcp.start(), "start failed")
 
 local sock = require("nvimcp.server").socket_path()
-local f = io.open(root .. "/tests/.boot.sock", "w")
+local f = assert(io.open(root .. "/tests/.boot.sock", "w"))
 f:write(sock)
 f:close()
+local g = assert(io.open(root .. "/tests/.boot.pid", "w"))
+g:write(tostring(vim.fn.getpid()))
+g:close()
 
 local buf = vim.api.nvim_create_buf(true, false)
 vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "original line one", "original line two" })
@@ -21,4 +24,4 @@ while vim.fn.filereadable(root .. "/tests/.stop") == 0 do
 end
 vim.fn.delete(root .. "/tests/.stop")
 vim.fn.delete(root .. "/tests/.boot.sock")
-nvimcp.stop()
+vim.fn.delete(root .. "/tests/.boot.pid")

@@ -23,7 +23,8 @@ for _ in $(seq 1 50); do
 	sleep 0.2
 done
 SOCK=$(cat tests/.boot.sock)
-echo "target socket: $SOCK"
+BOOTPID=$(cat tests/.boot.pid)
+echo "target socket: $SOCK (pid $BOOTPID)"
 
 N() {
 	"$NVIM" --server "$SOCK" --remote-expr "$1"
@@ -53,5 +54,12 @@ check "$(N "luaeval(\"require(${Q}nvimcp.server${Q}).socket_path()\")")" \
 echo done > tests/.stop
 wait "$bootpid" 2>/dev/null || true
 trap - EXIT
+
+SESS="$(dirname "$SOCK")/sessions.json"
+STALE=0
+[ -f "$SESS" ] && STALE=$(grep -c "\"$BOOTPID\"" "$SESS" || true)
+check "$STALE" "0" "cross-process: VimLeave cleans sessions entry" || true
+
+check "$([ -e "$SOCK" ] && echo yes || echo no)" "no" "cross-process: socket removed on exit" || true
 
 exit $fail

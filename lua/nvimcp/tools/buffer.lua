@@ -4,6 +4,8 @@ local tools = require("nvimcp.tools")
 
 local M = {}
 
+local MAX_MATCHES = 200
+
 local function bufnr_for(bid)
 	bid = bid or vim.api.nvim_get_current_buf()
 	if not vim.api.nvim_buf_is_valid(bid) then
@@ -146,6 +148,18 @@ function M.register_edit()
 			if not config.options.allow_edit then
 				error("buffer_edit disabled by nvimcp config (allow_edit=false)")
 			end
+			if type(args.start_line) ~= "number" or type(args.end_line) ~= "number" then
+				error("start_line and end_line must be integers")
+			end
+			if args.start_line < 1 then
+				error("start_line is 1-based; got " .. tostring(args.start_line))
+			end
+			if args.end_line < args.start_line then
+				error("end_line must be >= start_line")
+			end
+			if type(args.text) ~= "string" then
+				error("text must be a string")
+			end
 			local bid = bufnr_for(args.buffer_id)
 			if not vim.bo[bid].modifiable then
 				error("buffer is not modifiable")
@@ -176,7 +190,7 @@ end
 local function register_buffer_search()
 	tools.register({
 		name = "buffer_search",
-		description = "Search lines in a buffer. By default matches a literal string; set regex=true to use a Lua pattern (not regex).",
+		description = "Search lines in a buffer. By default matches a literal string; set regex=true to use a Lua pattern (not regex). Returns up to 200 matches; truncated=true means there may be more.",
 		inputSchema = {
 			type = "object",
 			properties = {
@@ -194,19 +208,21 @@ local function register_buffer_search()
 			end
 			local literal = not (args.regex or false)
 			local matches = {}
+			local truncated = false
 			for i, line in ipairs(vim.api.nvim_buf_get_lines(bid, 0, -1, false)) do
 				local ok, from = pcall(string.find, line, needle, 1, literal)
 				if ok and from then
+					if #matches >= MAX_MATCHES then
+						truncated = true
+						break
+					end
 					table.insert(matches, {
 						line_number = i,
 						text = sanitize.scrub(line),
 					})
-					if #matches >= 200 then
-						break
-					end
 				end
 			end
-			return { buffer_id = bid, matches = matches, count = #matches }
+			return { buffer_id = bid, matches = matches, count = #matches, truncated = truncated }
 		end,
 	})
 end

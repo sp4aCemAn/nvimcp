@@ -97,6 +97,17 @@ ok("buffer_search literal", res.count == 2 and res.matches[1].line_number == 9, 
 res = select(1, tools.call("buffer_search", { buffer_id = scratch, query = "M%.", regex = true }))
 ok("buffer_search regex", res.count == 1 and res.matches[1].line_number == 5, "count " .. res.count)
 
+local many = vim.api.nvim_create_buf(true, false)
+local many_lines = {}
+for i = 1, 250 do
+	many_lines[i] = "needle " .. i
+end
+vim.api.nvim_buf_set_lines(many, 0, -1, false, many_lines)
+res = select(1, tools.call("buffer_search", { buffer_id = many, query = "needle" }))
+ok("buffer_search caps at 200", res.count == 200 and res.truncated == true, "count " .. tostring(res.count) .. " truncated " .. tostring(res.truncated))
+res = select(1, tools.call("buffer_search", { buffer_id = many, query = "nonexistent-zzz" }))
+ok("buffer_search no match not truncated", res.count == 0 and res.truncated == false, vim.inspect(res))
+
 -- edits
 vim.bo[scratch].modified = false
 res = select(1, tools.call("buffer_edit", { buffer_id = scratch, start_line = 9, end_line = 9, text = "edited needle" }))
@@ -129,6 +140,14 @@ _, err = tools.call("buffer_edit", { buffer_id = scratch, start_line = 1, end_li
 ok("buffer_edit force guard", err ~= nil and err:match("unsaved"), tostring(err))
 res = select(1, tools.call("buffer_edit", { buffer_id = scratch, start_line = 1, end_line = 1, text = "x", force = true }))
 ok("buffer_edit force works", res ~= nil)
+
+vim.bo[scratch].modified = false
+_, err = tools.call("buffer_edit", { buffer_id = scratch, start_line = 0, end_line = 1, text = "x" })
+ok("buffer_edit start_line guard", err ~= nil and err:match("1%-based"), tostring(err))
+_, err = tools.call("buffer_edit", { buffer_id = scratch, start_line = 2, end_line = 1, text = "x" })
+ok("buffer_edit end_line guard", err ~= nil and err:match("end_line"), tostring(err))
+_, err = tools.call("buffer_edit", { buffer_id = scratch, start_line = 1, end_line = 1 })
+ok("buffer_edit text guard", err ~= nil and err:match("text"), tostring(err))
 
 -- diagnostics severity filtering with real vim.diagnostic data
 local ns = vim.api.nvim_create_namespace("nvimcp_test_ns")
@@ -184,6 +203,21 @@ refs, rerr = tools.call("lsp_references", {})
 restore_req()
 ok("references via stubbed LSP", rerr == nil and refs.count == 2 and refs.references[2].line == 5, vim.inspect(refs, rerr))
 
+-- partial position args: a given line is honored even without a character
+vim.lsp.buf_request_sync = function(_, _, params)
+	return { { result = { contents = { value = ("pos %d:%d"):format(params.position.line, params.position.character) } } } }
+end
+local pres, perr = tools.call("lsp_hover", { buffer_id = scratch, line = 5 })
+restore_req()
+ok("partial position uses given line", perr == nil and pres.hover:match("pos 4:0") ~= nil, vim.inspect(pres, perr))
+
+vim.lsp.buf_request_sync = function(_, _, params)
+	return { { result = { contents = { value = ("pos %d:%d"):format(params.position.line, params.position.character) } } } }
+end
+local pres2, perr2 = tools.call("lsp_hover", { buffer_id = scratch, character = 2 })
+restore_req()
+ok("character-only uses cursor line", perr2 == nil and pres2.hover:match("pos %d+:2") ~= nil, vim.inspect(pres2, perr2))
+
 -- rate limiting / dispatch
 require("nvimcp.config").options.rate_limit = { calls = 2, window = 60 }
 local server = require("nvimcp.server")
@@ -227,6 +261,55 @@ for _, t in ipairs(listed_edit) do
 	if t.name == "buffer_edit" then has_edit = true end
 end
 ok("allow_edit=true registers", has_edit)
+
+-- terminals.enabled without the phase-3 module must not break the registry
+require("nvimcp.config").options.terminals.enabled = true
+clear_tools_loaded()
+local term_ok, term_list = pcall(function()
+	return require("nvimcp.tools").list()
+end)
+ok("terminals.enabled tolerates missing term module", term_ok and #term_list >= 10, tostring(term_ok) .. " " .. vim.inspect(term_list and #term_list))
+require("nvimcp.config").options.terminals.enabled = false
+clear_tools_loaded()
+require("nvimcp.tools").list()
+
+-- stale sessions entries (dead socket) are pruned on next start
+local sessions_file = server.sessions_path()
+local okdec, sdata = pcall(vim.json.decode, table.concat(vim.fn.readfile(sessions_file), "\n"))
+if okdec and type(sdata) == "table" then
+	sdata["999999999999"] = { pid = 999999999999, socket = "/nonexistent-nvimcp-test.sock", cwd = "/tmp", config = "/tmp" }
+	vim.fn.writefile({ vim.json.encode(sdata) }, sessions_file)
+	nvimcp.stop()
+	nvimcp.start()
+	local okdec2, after = pcall(vim.json.decode, table.concat(vim.fn.readfile(sessions_file), "\n"))
+	ok("stale sessions entry pruned", okdec2 and after["999999999999"] == nil, vim.inspect(after))
+	ok("own sessions entry kept", okdec2 and after[tostring(vim.fn.getpid())] ~= nil, vim.inspect(after))
+	ok("sessions tmp file cleaned", vim.uv.fs_stat(sessions_file .. "." .. vim.fn.getpid() .. ".tmp") == nil)
+else
+	fail("prune setup", "could not read sessions file")
+end
+
+-- rpc on a stopped server reports "not started" without burning rate slots
+require("nvimcp.config").options.rate_limit = { calls = 2, window = 1 }
+nvimcp.stop()
+res = server.rpc("call_tool", { name = "buffer_list" })
+ok("stopped rpc reports not started", res.error ~= nil and res.error:match("not started") ~= nil, vim.inspect(res))
+nvimcp.start()
+local r1 = server.rpc("call_tool", { name = "buffer_list" })
+local r2 = server.rpc("call_tool", { name = "buffer_list" })
+local r3 = server.rpc("call_tool", { name = "buffer_list" })
+ok("stopped calls do not burn rate slots", r1.error == nil and r2.error == nil and r3.error ~= nil, vim.inspect({ r1.error, r2.error, r3.error }))
+require("nvimcp.config").options.rate_limit = { calls = 10, window = 5 }
+
+-- status pane: q must close the floating window
+if not vim.api.nvim_get_commands({})["NvimcpStatus"] then
+	vim.cmd("source " .. root .. "/plugin/nvimcp.lua")
+end
+vim.cmd("NvimcpStatus")
+local status_win = vim.api.nvim_get_current_win()
+vim.api.nvim_feedkeys("q", "mx", false)
+vim.cmd("redraw")
+ok("status pane q closes window", not vim.api.nvim_win_is_valid(status_win))
 
 ok("stop", nvimcp.stop() and not nvimcp.is_running())
 ok("socket removed", vim.uv.fs_stat(sock) == nil)

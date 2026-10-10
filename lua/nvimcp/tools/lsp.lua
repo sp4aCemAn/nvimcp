@@ -16,15 +16,15 @@ local function bufnr_for(bid)
 end
 
 local function position_of(bid, line, character)
-	if line and character then
-		return { line = math.max(0, line - 1), character = math.max(0, character) }
+	if line ~= nil then
+		return { line = math.max(0, line - 1), character = math.max(0, character or 0) }
 	end
 	local win = vim.fn.bufwinid(bid)
 	if win ~= -1 then
 		local cur = vim.api.nvim_win_get_cursor(win)
-		return { line = cur[1] - 1, character = cur[2] }
+		return { line = cur[1] - 1, character = math.max(0, character or cur[2]) }
 	end
-	return { line = 0, character = 0 }
+	return { line = 0, character = math.max(0, character or 0) }
 end
 
 local function as_array(v)
@@ -213,7 +213,7 @@ local function register_lsp_definition()
 			properties = {
 				buffer_id = { type = "integer", description = "Buffer id, defaults to current" },
 				line = { type = "integer", description = "1-based line, defaults to cursor line" },
-				character = { type = "integer", description = "0-based column, defaults to cursor column" },
+				character = { type = "integer", description = "0-based column, defaults to cursor column (0 when line is given)" },
 			},
 		},
 		handler = function(args)
@@ -247,7 +247,7 @@ local function register_lsp_references()
 			properties = {
 				buffer_id = { type = "integer", description = "Buffer id, defaults to current" },
 				line = { type = "integer", description = "1-based line, defaults to cursor line" },
-				character = { type = "integer", description = "0-based column, defaults to cursor column" },
+				character = { type = "integer", description = "0-based column, defaults to cursor column (0 when line is given)" },
 				include_declaration = { type = "boolean", description = "Include the declaration itself (default false)" },
 			},
 		},
@@ -283,7 +283,7 @@ local function register_lsp_hover()
 			properties = {
 				buffer_id = { type = "integer", description = "Buffer id, defaults to current" },
 				line = { type = "integer", description = "1-based line, defaults to cursor line" },
-				character = { type = "integer", description = "0-based column, defaults to cursor column" },
+				character = { type = "integer", description = "0-based column, defaults to cursor column (0 when line is given)" },
 			},
 		},
 		handler = function(args)
