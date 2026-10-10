@@ -13,7 +13,7 @@ python3 tests/msgpack_test.py || fail=1
 python3 tests/discovery_test.py || fail=1
 
 NVIM=$(command -v nvim)
-"$NVIM" --headless -l tests/boot.lua &
+NVIMTERMINALS_PATH="${NVIMTERMINALS_PATH:-$HOME/vsc/nvimterminals}" "$NVIM" --headless -l tests/boot.lua &
 bootpid=$!
 trap 'touch tests/.stop; wait "$bootpid" 2>/dev/null || true' EXIT
 

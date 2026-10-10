@@ -59,17 +59,25 @@ end
 local function register_term_list()
 	tools.register({
 		name = "term_list",
-		description = "List terminals managed by nvimterminals in this session (name, running/dead, pid, exit code, agent permission, line count).",
+		description = "List terminals managed by nvimterminals in this session (name, running/dead, pid, exit code, agent permission, line count). Dead terminals keep their scrollback.",
 		inputSchema = {
 			type = "object",
-			properties = {},
+			-- NOTE: properties must never be an empty table — empty Lua tables
+			-- marshal across msgpack as JSON arrays, which MCP clients reject.
+			properties = {
+				include_dead = {
+					type = "boolean",
+					description = "Include exited terminals (default false)",
+				},
+			},
 		},
-		handler = function()
+		handler = function(args)
 			local t = terminals_mod()
 			if not t then
 				error("nvimterminals is not available in this session")
 			end
 			local out = {}
+			local include_dead = args and args.include_dead and true or false
 			for _, name in ipairs(t.list() or {}) do
 				local entry = { name = name }
 				local st = state_for(t, name)
@@ -89,7 +97,11 @@ local function register_term_list()
 						entry.line_count = vim.api.nvim_buf_line_count(entry.buf)
 					end
 				end
+				if entry.dead and not include_dead then
+					goto continue
+				end
 				table.insert(out, entry)
+				::continue::
 			end
 			return { terminals = out, count = #out }
 		end,

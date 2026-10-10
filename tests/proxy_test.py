@@ -62,6 +62,18 @@ def main():
 	schemas = [t.get("inputSchema", {}).get("type") for t in tools.get("result", {}).get("tools", [])]
 	ok("tools/list schemas are objects", schemas and all(s == "object" for s in schemas), schemas)
 
+	# MCP clients (SDKs) zod-validate tool defs: `properties` must be a JSON
+	# OBJECT, `required` a JSON ARRAY. Empty Lua tables marshal across msgpack
+	# as arrays, silently breaking clients ("Failed to get tools"). Assert the
+	# wire shapes for every tool.
+	for t in tools.get("result", {}).get("tools", []):
+		schema = t.get("inputSchema", {})
+		props = schema.get("properties")
+		reqd = schema.get("required")
+		shp = t.get("name")
+		ok("schema properties is object: %s" % shp, props is None or isinstance(props, dict), repr(props)[:120])
+		ok("schema required is array: %s" % shp, reqd is None or isinstance(reqd, list), repr(reqd)[:120])
+
 	read1 = req("tools/call", {"name": "buffer_read", "arguments": {}})
 	text1 = read1.get("result", {}).get("content", [{}])[0].get("text", "")
 	ok("tools/call buffer_read", "original line one" in text1 and not read1.get("result", {}).get("isError"), text1)
