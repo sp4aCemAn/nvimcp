@@ -3,3 +3,4 @@
 tests/.stop
 tests/.boot.sock
 tests/.boot.pid
+__pycache__/
