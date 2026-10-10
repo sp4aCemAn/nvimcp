@@ -5,20 +5,22 @@ Exposes your live nvim session — buffers and LSP state — to any MCP client
 (opencode, Claude Code, Claude Desktop, Cursor, ...).
 
 Design: all tool logic lives inside the nvim session as a Lua plugin; a thin
-zero-dependency stdio proxy (phase 2) bridges any MCP client to it over
-Neovim's own RPC socket. No `eval`-style escape hatch — clients call named,
-fixed tools with JSON arguments only.
+zero-dependency stdio proxy bridges any MCP client to it over Neovim's own
+RPC socket. No `eval`-style escape hatch — clients call named, fixed tools
+with JSON arguments only.
 
 ## Status
 
-**Phase 1 (this release):** in-nvim server + buffer/LSP tools.
-Phase 2 adds the stdio proxy + client configs; phase 3 adds terminal
+**Phase 1 + 2 (this release):** in-nvim server + buffer/LSP tools, plus the
+zero-dependency stdio proxy that lets any MCP client (opencode, Claude Code,
+Claude Desktop, Cursor, ...) drive a live nvim session. Phase 3 adds terminal
 integration (via [nvimterminals](https://github.com/sp4aCemAn/nvimterminals))
 with in-nvim command approval.
 
 ## Requirements
 
 - Neovim 0.12+
+- Python 3.8+ (only for the stdio proxy; the nvim plugin itself needs nothing else)
 
 ## Install
 
@@ -40,6 +42,56 @@ By default the server starts automatically (`autostart = true`).
 - `:NvimcpStart` — start the server
 - `:NvimcpStop` — stop it
 - `:NvimcpStatus` — floating status pane (socket path, session file, tool list)
+
+## Connecting MCP clients (phase 2)
+
+	MCP client <— stdio (line-delimited JSON-RPC) —> nvimcp-proxy
+	          <— unix socket (msgpack-RPC) —> live nvim —> nvimcp tools
+
+`proxy/nvimcp-proxy.py` (Python stdlib only) finds your nvim session
+automatically: `--socket` wins; else `--pid` picks from the sessions file; else
+the session whose nvim cwd matches the directory the client was launched
+from; else the only running session. It connects lazily on the first tool
+request, so nvim can be started before or after the client, and it reconnects
+if you restart nvim mid-session.
+
+opencode — `opencode.json`:
+
+```json
+{
+	"mcp": {
+		"nvimcp": {
+			"type": "local",
+			"command": ["python3", "/absolute/path/to/nvimcp/proxy/nvimcp-proxy.py"],
+			"enabled": true
+		}
+	}
+}
+```
+
+Claude Code:
+
+```sh
+claude mcp add nvimcp -- python3 /absolute/path/to/nvimcp/proxy/nvimcp-proxy.py
+```
+
+Claude Desktop (`claude_desktop_config.json`) and Cursor (`~/.cursor/mcp.json`):
+
+```json
+{
+	"mcpServers": {
+		"nvimcp": {
+			"command": "python3",
+			"args": ["/absolute/path/to/nvimcp/proxy/nvimcp-proxy.py"]
+		}
+	}
+}
+```
+
+Multiple nvim sessions? Pin one with `--pid <pid>` (see `:NvimcpStatus` or the
+sessions file) or `--socket <path>`. Agents can be chatty — consider
+`rate_limit = { calls = 60, window = 5 }` when pairing with an MCP client.
+Debugging: run the proxy directly with `--debug` and paste JSON lines into it.
 
 ## Config
 
@@ -96,6 +148,9 @@ LSP:
 - Communication happens over a user-owned Unix socket at
   `$XDG_RUNTIME_DIR/nvimcp/nvimcp-<pid>.sock` (mode 600). No TCP listening.
 - Tool handlers are fixed Lua functions; the client sends arguments, never code.
+- The proxy is a fixed translator: it calls one hard-coded `nvim_exec_lua`
+  expression (`require('nvimcp.server').rpc`); client data only ever crosses
+  as tool arguments, never as code.
 - All tool output is scrubbed unconditionally (AWS/GCP/GitHub/OpenAI/Slack
   keys, bearer tokens, `password=`-style assignments, long hex/base64 blobs)
   and capped by `max_output_lines`; there is no config toggle to disable it.
@@ -110,4 +165,5 @@ LSP:
 ```sh
 nvim --headless -l tests/lifecycle.lua   # unit + tool behavior (exit 0 = pass)
 ./tests/integration.sh                   # cross-process round-trip over the socket
+./tests/proxy.sh                         # phase 2: msgpack unit + MCP-over-stdio e2e (needs python3)
 ```

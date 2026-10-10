@@ -1,2 +1,5 @@
 .luarc.json
 *.log
+tests/.stop
+tests/.boot.sock
+tests/.boot.pid

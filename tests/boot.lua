@@ -3,7 +3,7 @@ vim.opt.rtp:prepend(root)
 package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;" .. package.path
 
 local nvimcp = require("nvimcp")
-nvimcp.setup({ autostart = false })
+nvimcp.setup({ autostart = false, rate_limit = { calls = 100, window = 5 } })
 assert(nvimcp.start(), "start failed")
 
 local sock = require("nvimcp.server").socket_path()
