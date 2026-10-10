@@ -26,6 +26,7 @@ echo "target socket: $SOCK (pid $BOOTPID)"
 
 python3 tests/proxy_test.py --socket "$SOCK" || fail=1
 python3 tests/proxy_test.py --pid "$BOOTPID" || fail=1
+python3 tests/proxy_test.py || fail=1   # default discovery: sessions file picked by cwd
 
 echo done > tests/.stop
 wait "$bootpid" 2>/dev/null || true

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import glob
 import json
 import os
 import selectors
@@ -8,6 +9,7 @@ import signal
 import socket
 import struct
 import sys
+import tempfile
 import time
 
 SERVER_NAME = "nvimcp"
@@ -438,10 +440,24 @@ class NvimcpProxy:
         except ProxyError as e:
             self._send_mcp_error(mcp_id, -32603, str(e))
 
-    def _default_sessions_file(self):
+    def _sessions_files(self):
+        if self.sessions_file_arg:
+            return [self.sessions_file_arg]
         xdg = os.environ.get("XDG_RUNTIME_DIR")
-        base = xdg if xdg else "/run/user/%d" % os.getuid()
-        return os.path.join(base, "nvimcp", "sessions.json")
+        if xdg:
+            return [os.path.join(xdg, "nvimcp", "sessions.json")]
+        if sys.platform == "darwin":
+            # stdpath("run") on macOS is $TMPDIR/nvim.<user>/<random> (unique per
+            # nvim process), so the sessions file path is not stable: find every
+            # running session by globbing (the dir may be named after the
+            # username or the uid).
+            tmp = tempfile.gettempdir()
+            paths = []
+            for b in sorted(glob.glob(os.path.join(tmp, "nvim.*"))):
+                for p in sorted(glob.glob(os.path.join(b, "*", "nvimcp", "sessions.json"))):
+                    if p not in paths:
+                        paths.append(p)
+            return paths
 
     def _describe(self, entries):
         return ", ".join("pid %s (%s)" % (e.get("pid"), e.get("cwd", "?")) for e in entries)
@@ -449,21 +465,34 @@ class NvimcpProxy:
     def _discover(self):
         if self.socket_arg:
             return {"socket": self.socket_arg, "pid": None}
-        path = self.sessions_file_arg or self._default_sessions_file()
-        try:
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            raise ProxyError("no sessions file at %s; is nvim running with nvimcp started?" % path)
-        except (OSError, ValueError) as e:
-            raise ProxyError("cannot read sessions file %s: %s" % (path, e))
-        entries = [e for e in (data or {}).values() if isinstance(e, dict) and isinstance(e.get("socket"), str)]
+        paths = self._sessions_files()
+        if paths == ["/run/user/%d/nvimcp/sessions.json" % os.getuid()] and not os.path.exists(paths[0]):
+            raise ProxyError(
+                "no sessions file at %s; is nvim running with nvimcp started? "
+                "(this is the Linux default path; on macOS pass --sessions-file, --pid "
+                "or --socket)" % paths[0]
+            )
+        entries = []
+        seen_sockets = set()
+        for path in paths:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError) as e:
+                self._warn("cannot read sessions file %s: %s" % (path, e))
+                continue
+            for e in (data or {}).values():
+                if isinstance(e, dict) and isinstance(e.get("socket"), str) and e["socket"] not in seen_sockets:
+                    seen_sockets.add(e["socket"])
+                    entries.append(e)
         if self.pid_arg is not None:
             for e in entries:
                 if e.get("pid") == self.pid_arg:
                     return e
             extra = "; available: %s" % self._describe(entries) if entries else ""
-            raise ProxyError("no nvimcp session with pid %s in %s%s" % (self.pid_arg, path, extra))
+            raise ProxyError("no nvimcp session with pid %s%s" % (self.pid_arg, extra))
         cwd = os.getcwd()
         cwd_hits = [e for e in entries if e.get("cwd") == cwd]
         if len(cwd_hits) == 1:
@@ -474,7 +503,9 @@ class NvimcpProxy:
         if len(entries) == 1:
             return entries[0]
         if not entries:
-            raise ProxyError("no nvimcp sessions in %s; start nvim and run :NvimcpStart" % path)
+            raise ProxyError(
+                "no nvimcp sessions found in %s; start nvim and run :NvimcpStart" % (", ".join(paths) or "default locations")
+            )
         raise ProxyError(
             "multiple nvim sessions; pass --pid or --socket. Available: %s" % self._describe(entries)
         )
@@ -647,7 +678,7 @@ def main():
     )
     p.add_argument("--socket", help="connect to this nvimcp unix socket directly")
     p.add_argument("--pid", type=int, help="pick this nvim pid from the sessions file")
-    p.add_argument("--sessions-file", help="path to sessions.json (default: $XDG_RUNTIME_DIR/nvimcp/sessions.json)")
+    p.add_argument("--sessions-file", help="path to sessions.json (default: $XDG_RUNTIME_DIR/nvimcp/sessions.json; on macOS all <TMPDIR>/nvim.<user>/<random>/nvimcp/sessions.json candidates are scanned)")
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="per-nvim-rpc timeout in seconds (default 30)")
     p.add_argument("--debug", action="store_true", help="log proxy activity to stderr")
     args = p.parse_args()
