@@ -86,8 +86,10 @@ local res
 res = select(1, tools.call("buffer_list", {}))
 ok("buffer_list finds scratch", vim.iter(res.buffers):any(function(b) return b.id == scratch end))
 
+-- nvim resolves the buffer-name path (macOS maps /tmp -> /private/tmp), so
+-- assert on the tail of the name rather than an exact string
 res = select(1, tools.call("buffer_info", { buffer_id = scratch }))
-ok("buffer_info", res.cursor ~= nil and res.line_count == 10 and res.name == "/tmp/nvimcp-test.lua", vim.inspect({ c = res.cursor, l = res.line_count }))
+ok("buffer_info", res.cursor ~= nil and res.line_count == 10 and res.name:match("nvimcp%-test%.lua$") ~= nil, vim.inspect({ c = res.cursor, l = res.line_count, n = res.name }))
 
 res = select(1, tools.call("buffer_read", { buffer_id = scratch, start_line = 1, max_lines = 4 }))
 ok("buffer_read scrub", not res.lines[1]:match("AKIA") and res.lines[1]:match("REDACTED"), res.lines[1])

@@ -27,8 +27,10 @@ echo "target socket: $SOCK (pid $BOOTPID)"
 
 python3 tests/proxy_test.py --socket "$SOCK" || fail=1
 python3 tests/proxy_test.py --pid "$BOOTPID" || fail=1
-python3 tests/proxy_test.py || fail=1   # default discovery: sessions file picked by cwd
-(cd tests && python3 ../tests/proxy_test.py) || fail=1   # ancestor discovery: nvim at repo root, client in subdir
+(cd tests && python3 ../tests/proxy_test.py) || fail=1        # exact cwd match -> boot session (tests/ cwd)
+mkdir -p tests/e2e-sub
+(cd tests/e2e-sub && python3 ../../tests/proxy_test.py) || fail=1  # ancestor match: boot (tests/) outranks repo-root sessions
+rmdir tests/e2e-sub
 
 echo done > tests/.stop
 wait "$bootpid" 2>/dev/null || true

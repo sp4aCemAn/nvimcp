@@ -157,6 +157,21 @@ LSP:
   (default to the cursor position of the target buffer, so editor state can
   steer the AI's queries)
 
+Terminals (opt-in, requires the
+[nvimterminals](https://github.com/sp4aCemAn/nvimterminals) plugin):
+
+- `term_list` — named terminals (name, running/dead, pid, exit code, agent
+  permission, line count); dead terminals keep their scrollback
+- `term_read` — last n lines of a terminal's scrollback (scrubbed + capped like
+  `buffer_read`); read-only, always available
+- `term_send` — send a line of input to a terminal; **authorization lives
+  entirely in nvimterminals**: the terminal needs agent control enabled
+  (`:TermAgent`) and its command policy (`:TermPolicy`) must allow the line
+  (deny rules win, `*` allows all, empty policy denies everything). Denials
+  come back as tool errors carrying the reason string verbatim. The tools only
+  register when `terminals.enabled = true` and nvimterminals is loaded;
+  `term_send` additionally requires nvimterminals with the agent-control API.
+
 ## Security
 
 - Communication happens over a user-owned Unix socket at
@@ -173,8 +188,9 @@ LSP:
 - `allow_edit` is read when the tool registry first loads; changing it in a
   live session only affects new registrations (a running server that already
   registered `buffer_edit` still refuses calls while `allow_edit=false`).
-- ✱Terminal tools (phase 3) additionally require per-terminal allowlists on the
-  nvimterminals side and an in-nvim yes/no approval per command.
+- ✱Terminal tools (phase 3) are read-only by default; `term_send` is authorized
+  exclusively by nvimterminals (per-terminal agent toggle + command policy,
+  denials never run the command). nvimcp never overrides that policy.
 
 ## Running the tests
 
@@ -182,4 +198,6 @@ LSP:
 nvim --headless -l tests/lifecycle.lua   # unit + tool behavior (exit 0 = pass)
 ./tests/integration.sh                   # cross-process round-trip over the socket
 ./tests/proxy.sh                         # phase 2: msgpack unit + MCP-over-stdio e2e (needs python3)
+nvim --headless -l tests/terminal.lua    # phase 3: term_* tools e2e (needs nvimterminals on
+                                         # the runtimepath or NVIMTERMINALS_PATH set)
 ```
