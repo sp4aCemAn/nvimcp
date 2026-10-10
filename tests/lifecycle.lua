@@ -55,6 +55,25 @@ local perms = vim.fn.getfperm(sock)
 ok("socket perms", perms == "rw-------", "perms " .. perms)
 ok("sessions file exists", vim.uv.fs_stat(require("nvimcp.server").sessions_path()) ~= nil)
 
+-- session entry records pid/socket/cwd and a recency timestamp; cwd tracks
+-- :cd via DirChanged so cwd-based session matching stays honest
+local function own_entry()
+	local okd, d = pcall(vim.json.decode, table.concat(vim.fn.readfile(require("nvimcp.server").sessions_path()), "\n"))
+	return okd and d and d[tostring(vim.fn.getpid())]
+end
+local entry0 = own_entry()
+ok("sessions entry fields", entry0 ~= nil and entry0.pid == vim.fn.getpid() and type(entry0.registered_at) == "number", vim.inspect(entry0))
+local prev_dir = vim.uv.cwd()
+vim.fn.mkdir(prev_dir .. "/e2e-shim", "p")
+vim.cmd("cd " .. vim.fn.fnameescape(prev_dir .. "/e2e-shim"))
+vim.wait(200)
+local entry1 = own_entry()
+ok("DirChanged refreshes session cwd", entry1 ~= nil and vim.fs.normalize(entry1.cwd) == vim.fs.normalize(prev_dir .. "/e2e-shim"), vim.inspect(entry1 and entry1.cwd))
+vim.cmd("cd " .. vim.fn.fnameescape(prev_dir))
+vim.wait(200)
+ok("DirChanged refresh returns entry", own_entry() ~= nil)
+vim.fn.delete(prev_dir .. "/e2e-shim", "d")
+
 local listed = tools.list()
 ok("tools listed", #listed >= 10, "only " .. #listed)
 for _, expected in ipairs({ "buffer_list", "buffer_info", "buffer_read", "buffer_edit", "buffer_search", "lsp_clients", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover" }) do

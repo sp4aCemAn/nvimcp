@@ -526,6 +526,7 @@ class NvimcpProxy:
             for e in (data or {}).values():
                 if isinstance(e, dict) and isinstance(e.get("socket"), str) and e["socket"] not in seen_sockets:
                     seen_sockets.add(e["socket"])
+                    e["_mtime"] = os.path.getmtime(path)
                     entries.append(e)
         alive = [e for e in entries if self._session_alive(e)]
         if len(alive) < len(entries):
@@ -554,15 +555,20 @@ class NvimcpProxy:
                     % (cwd, related[0].get("pid"))
                 )
             return related[0]
-        if len(entries) == 1:
-            return entries[0]
         if not entries:
             raise ProxyError(
                 "no nvimcp sessions found in %s; start nvim and run :NvimcpStart" % (", ".join(paths) or "default locations")
             )
-        raise ProxyError(
-            "multiple nvim sessions; pass --pid or --socket. Available: %s" % self._describe(entries)
-        )
+        # No cwd-related session anywhere: fall back to the most recently
+        # registered live session so an agent opened anywhere still reaches
+        # an editor — visibly, and pinable via --pid/--socket.
+        newest = max(entries, key=lambda e: e.get("registered_at") or e.get("_mtime") or 0)
+        if len(entries) > 1 or os.path.realpath(newest.get("cwd") or "") != os.path.realpath(cwd):
+            self._warn(
+                "no nvimcp session related to %s; connecting to most recent session pid %s (%s) "
+                "-- pass --pid or --socket to pin" % (cwd, newest.get("pid"), newest.get("cwd"))
+            )
+        return newest
 
     def _connect(self):
         if self.sock is not None:

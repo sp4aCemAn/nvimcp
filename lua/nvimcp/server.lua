@@ -78,6 +78,7 @@ local function sessions_update()
 		socket = sock,
 		cwd = vim.uv.cwd(),
 		config = vim.fn.stdpath("config"),
+		registered_at = os.time(),
 	}
 	sessions_write(data)
 end
@@ -101,6 +102,14 @@ local function arm_exit_cleanup()
 		group = "nvimcp",
 		callback = function()
 			M.stop()
+		end,
+	})
+	-- Keep the session entry's cwd honest when the user moves the session;
+	-- proxies match sessions by cwd, so a stale entry misdirects discovery.
+	vim.api.nvim_create_autocmd("DirChanged", {
+		group = "nvimcp",
+		callback = function()
+			pcall(sessions_update)
 		end,
 	})
 end
