@@ -27,10 +27,35 @@ echo "target socket: $SOCK (pid $BOOTPID)"
 
 python3 tests/proxy_test.py --socket "$SOCK" || fail=1
 python3 tests/proxy_test.py --pid "$BOOTPID" || fail=1
-(cd tests && python3 ../tests/proxy_test.py) || fail=1        # exact cwd match -> boot session (tests/ cwd)
+# The harness shell itself may be a descendant of the user's own live nvim
+# session (e.g. opencode running inside a term); --skip-ancestry keeps these
+# cwd-based e2e cases pinned to the boot fixture.
+(cd tests && python3 ../tests/proxy_test.py --skip-ancestry) || fail=1        # exact cwd match -> boot session (tests/ cwd)
 mkdir -p tests/e2e-sub
-(cd tests/e2e-sub && python3 ../../tests/proxy_test.py) || fail=1  # ancestor match: boot (tests/) outranks repo-root sessions
+(cd tests/e2e-sub && python3 ../../tests/proxy_test.py --skip-ancestry) || fail=1  # ancestor match: boot (tests/) outranks repo-root sessions
 rmdir tests/e2e-sub
+
+# terminal-ancestry match: launch the e2e client from INSIDE the boot nvim
+# (remote jobstart -> the shell is the boot session's process child) from an
+# unrelated cwd -> must connect to the boot session without any cwd relation
+REPO="$PWD"
+rm -f tests/.ancestry.out
+nvim --server "$SOCK" --remote-expr "jobstart(['/bin/sh','-c','cd /tmp && python3 $REPO/tests/proxy_test.py > $REPO/tests/.ancestry.out 2>&1'])" >/dev/null
+ANCESTRY_OK=0
+for _ in $(seq 1 150); do
+	if [ -s tests/.ancestry.out ] && grep -q "proxy tests:" tests/.ancestry.out; then
+		ANCESTRY_OK=1
+		break
+	fi
+	sleep 0.2
+done
+if [ "$ANCESTRY_OK" = 1 ] && grep -q "all passed" tests/.ancestry.out; then
+	echo "PASS terminal-ancestry e2e (client child of boot nvim, unrelated cwd)"
+else
+	echo "FAIL terminal-ancestry e2e: $(tail -3 tests/.ancestry.out 2>/dev/null)"
+	fail=1
+fi
+rm -f tests/.ancestry.out
 
 # fallback scenarios run from a cwd unrelated to any live session (mktemp)
 REPO="$PWD"

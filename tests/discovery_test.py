@@ -77,6 +77,12 @@ def main():
 		files = p._sessions_files()
 		ok("sessions_files always returns a list", isinstance(files, list), files)
 
+		chain = p._ancestor_pid_chain()
+		ok("ancestor chain starts at own parent", len(chain) > 0 and chain[0] == os.getppid(),
+			"chain[0]=%r ppid=%r" % (chain[0] if chain else None, os.getppid()))
+		ok("ancestor chain is bounded ints", all(isinstance(x, int) and x > 1 for x in chain), chain)
+		ok("ancestor chain has no duplicates... bounded growth", len(chain) <= 32, chain)
+
 	if n_fail > 0:
 		print("discovery tests: %d failures" % n_fail)
 		sys.exit(1)

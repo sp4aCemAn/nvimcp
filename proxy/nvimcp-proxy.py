@@ -8,6 +8,7 @@ import selectors
 import signal
 import socket
 import struct
+import subprocess
 import sys
 import tempfile
 import time
@@ -297,6 +298,7 @@ class NvimcpProxy:
         self.socket_arg = args.socket
         self.pid_arg = args.pid
         self.sessions_file_arg = args.sessions_file
+        self.skip_ancestry = getattr(args, "skip_ancestry", False)
         self.timeout = args.timeout
         self.debug = args.debug
         self.sel = selectors.DefaultSelector()
@@ -463,6 +465,31 @@ class NvimcpProxy:
     def _describe(self, entries):
         return ", ".join("pid %s (%s)" % (e.get("pid"), e.get("cwd", "?")) for e in entries)
 
+    def _ancestor_pid_chain(self):
+        """Nearest-first pids of this process's ancestors.
+
+        An agent (and therefore this proxy) launched inside an nvim terminal
+        window is a descendant of that nvim session's process, so matching a
+        session pid in this chain is an exact owner match — even when the
+        agent's shell cd'ed elsewhere. ps(1) keeps this portable on both
+        Linux and macOS (no /proc needed)."""
+        chain = []
+        pid = os.getpid()
+        for _ in range(32):
+            try:
+                out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True, timeout=2).stdout
+            except Exception:
+                break
+            try:
+                ppid = int(out.strip().split()[0]) if out.strip() else 0
+            except (ValueError, IndexError):
+                break
+            if ppid <= 1:
+                break
+            chain.append(ppid)
+            pid = ppid
+        return chain
+
     def _session_alive(self, entry):
         pid = entry.get("pid")
         if not isinstance(pid, int) or pid <= 0:
@@ -539,6 +566,15 @@ class NvimcpProxy:
                     return e
             extra = "; available: %s" % self._describe(entries) if entries else ""
             raise ProxyError("no nvimcp session with pid %s%s" % (self.pid_arg, extra))
+        # Terminal ancestry: an agent launched inside an nvim terminal (any
+        # child of an nvimcp session's process tree) belongs to that session,
+        # regardless of the shell's cwd.
+        if not self.skip_ancestry:
+            for apid in self._ancestor_pid_chain():
+                for e in entries:
+                    if e.get("pid") == apid:
+                        self._log("matched session pid %s via terminal ancestry" % apid)
+                        return e
         cwd = os.getcwd()
         cwd_hits = [e for e in entries if e.get("cwd") == cwd]
         if len(cwd_hits) == 1:
@@ -753,6 +789,7 @@ def main():
     p.add_argument("--socket", help="connect to this nvimcp unix socket directly")
     p.add_argument("--pid", type=int, help="pick this nvim pid from the sessions file")
     p.add_argument("--sessions-file", help="path to sessions.json (default: $XDG_RUNTIME_DIR/nvimcp/sessions.json; on macOS all <TMPDIR>/nvim.<user>/<random>/nvimcp/sessions.json candidates are scanned)")
+    p.add_argument("--skip-ancestry", action="store_true", help="disable terminal-ancestry session matching (testing hook; ancestry matching is otherwise always on)")
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="per-nvim-rpc timeout in seconds (default 30)")
     p.add_argument("--debug", action="store_true", help="log proxy activity to stderr")
     args = p.parse_args()
