@@ -51,6 +51,11 @@ function M.stop()
 	return true
 end
 
+function M.proxy_path()
+	local hits = vim.api.nvim_get_runtime_file("proxy/nvimcp-proxy.py", false)
+	return hits[1]
+end
+
 function M.status()
 	local server = require("nvimcp.server")
 	local lines = {
@@ -63,6 +68,8 @@ function M.status()
 	else
 		table.insert(lines, "socket: (not started)")
 	end
+	local proxy = M.proxy_path()
+	table.insert(lines, "proxy: " .. (proxy or "(not found — full clone required)"))
 	local names = vim.tbl_map(function(t)
 		return t.name
 	end, require("nvimcp.tools").list())

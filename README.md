@@ -41,7 +41,7 @@ By default the server starts automatically (`autostart = true`).
 
 - `:NvimcpStart` — start the server
 - `:NvimcpStop` — stop it
-- `:NvimcpStatus` — floating status pane (socket path, session file, tool list)
+- `:NvimcpStatus` — floating status pane (socket path, session file, proxy path, tool list)
 
 ## Connecting MCP clients (phase 2)
 
@@ -55,6 +55,14 @@ from; else the only running session. It connects lazily on the first tool
 request, so nvim can be started before or after the client, and it reconnects
 if you restart nvim mid-session.
 
+Your client config needs the proxy's absolute path — where that lives depends
+on your plugin manager, so don't guess: run `:NvimcpStatus` in nvim and copy
+the `proxy:` line (or `:lua print(require("nvimcp").proxy_path())`). Client
+configs don't expand `~` or env vars, so paste the real absolute path. With
+lazy.nvim it is typically
+`/home/you/.local/share/nvim/lazy/nvimcp/proxy/nvimcp-proxy.py`
+(macOS: `/Users/you/.local/share/nvim/lazy/nvimcp/proxy/nvimcp-proxy.py`).
+
 opencode — `opencode.json`:
 
 ```json
@@ -62,7 +70,7 @@ opencode — `opencode.json`:
 	"mcp": {
 		"nvimcp": {
 			"type": "local",
-			"command": ["python3", "/absolute/path/to/nvimcp/proxy/nvimcp-proxy.py"],
+			"command": ["python3", "/home/you/.local/share/nvim/lazy/nvimcp/proxy/nvimcp-proxy.py"],
 			"enabled": true
 		}
 	}
@@ -72,7 +80,7 @@ opencode — `opencode.json`:
 Claude Code:
 
 ```sh
-claude mcp add nvimcp -- python3 /absolute/path/to/nvimcp/proxy/nvimcp-proxy.py
+claude mcp add nvimcp -- python3 /home/you/.local/share/nvim/lazy/nvimcp/proxy/nvimcp-proxy.py
 ```
 
 Claude Desktop (`claude_desktop_config.json`) and Cursor (`~/.cursor/mcp.json`):
@@ -82,7 +90,7 @@ Claude Desktop (`claude_desktop_config.json`) and Cursor (`~/.cursor/mcp.json`):
 	"mcpServers": {
 		"nvimcp": {
 			"command": "python3",
-			"args": ["/absolute/path/to/nvimcp/proxy/nvimcp-proxy.py"]
+			"args": ["/home/you/.local/share/nvim/lazy/nvimcp/proxy/nvimcp-proxy.py"]
 		}
 	}
 }

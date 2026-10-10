@@ -32,6 +32,12 @@ ok("tools list before setup", ok_list and type(pretools) == "table" and #pretool
 local toolsline = table.concat(nvimcp.status(), "\n"):match("tools: [^\n]*")
 ok("status lists tool names", toolsline ~= nil and toolsline:find("buffer_list") ~= nil and toolsline:find("lsp_diagnostics") ~= nil and toolsline:match("^tools: %a") ~= nil, vim.inspect(toolsline))
 
+-- status()/proxy_path() resolve the installed proxy path from the runtime path
+local proxyline = table.concat(nvimcp.status(), "\n"):match("proxy: [^\n]*")
+ok("status shows proxy path", proxyline ~= nil and proxyline:match("nvimcp%-proxy%.py") ~= nil, vim.inspect(proxyline))
+local ppath = nvimcp.proxy_path()
+ok("proxy_path resolves to a real file", ppath ~= nil and ppath:match("nvimcp%-proxy%.py$") ~= nil and vim.uv.fs_stat(ppath) ~= nil, tostring(ppath))
+
 nvimcp.setup({ autostart = false })
 local cfg = require("nvimcp.config").options
 ok("config defaults correct", cfg.autostart == false and cfg.allow_edit == true and cfg.rate_limit.calls == 10 and cfg.terminals.enabled == false)
