@@ -559,16 +559,30 @@ class NvimcpProxy:
             raise ProxyError(
                 "no nvimcp sessions found in %s; start nvim and run :NvimcpStart" % (", ".join(paths) or "default locations")
             )
-        # No cwd-related session anywhere: fall back to the most recently
-        # registered live session so an agent opened anywhere still reaches
-        # an editor — visibly, and pinable via --pid/--socket.
-        newest = max(entries, key=lambda e: e.get("registered_at") or e.get("_mtime") or 0)
-        if len(entries) > 1 or os.path.realpath(newest.get("cwd") or "") != os.path.realpath(cwd):
+        # No cwd-related session anywhere. Sole live session is unambiguous —
+        # connect. Otherwise stay strict: only sessions whose nvimcp config has
+        # fallback_recent=true may be picked (their opt-in is published in the
+        # sessions file); zero or multiple opted-in sessions -> loud error.
+        if len(entries) > 1:
+            opted = [e for e in entries if e.get("fallback_recent")]
+            if not opted:
+                raise ProxyError(
+                    "no nvimcp session related to %s; set fallback_recent=true in the nvimcp "
+                    "config of the session you want agents opened anywhere to reach, or pass "
+                    "--pid/--socket. Available: %s" % (cwd, self._describe(entries))
+                )
+            if len(opted) > 1:
+                raise ProxyError(
+                    "no session related to %s and several opted in to fallback_recent; pass "
+                    "--pid or --socket. Available (opted): %s" % (cwd, self._describe(opted))
+                )
+            newest = max(opted, key=lambda e: e.get("registered_at") or e.get("_mtime") or 0)
             self._warn(
-                "no nvimcp session related to %s; connecting to most recent session pid %s (%s) "
-                "-- pass --pid or --socket to pin" % (cwd, newest.get("pid"), newest.get("cwd"))
+                "no nvimcp session related to %s; connecting to opted-in session pid %s (%s)"
+                % (cwd, newest.get("pid"), newest.get("cwd"))
             )
-        return newest
+            return newest
+        return entries[0]
 
     def _connect(self):
         if self.sock is not None:

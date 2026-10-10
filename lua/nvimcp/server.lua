@@ -79,6 +79,7 @@ local function sessions_update()
 		cwd = vim.uv.cwd(),
 		config = vim.fn.stdpath("config"),
 		registered_at = os.time(),
+		fallback_recent = config.options.fallback_recent and true or false,
 	}
 	sessions_write(data)
 end

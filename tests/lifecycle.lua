@@ -63,6 +63,7 @@ local function own_entry()
 end
 local entry0 = own_entry()
 ok("sessions entry fields", entry0 ~= nil and entry0.pid == vim.fn.getpid() and type(entry0.registered_at) == "number", vim.inspect(entry0))
+ok("fallback_recent published in entry", entry0.fallback_recent == false, vim.inspect(entry0))
 local prev_dir = vim.uv.cwd()
 vim.fn.mkdir(prev_dir .. "/e2e-shim", "p")
 vim.cmd("cd " .. vim.fn.fnameescape(prev_dir .. "/e2e-shim"))
@@ -72,6 +73,16 @@ ok("DirChanged refreshes session cwd", entry1 ~= nil and vim.fs.normalize(entry1
 vim.cmd("cd " .. vim.fn.fnameescape(prev_dir))
 vim.wait(200)
 ok("DirChanged refresh returns entry", own_entry() ~= nil)
+
+-- opt-in flag is re-published on refresh
+require("nvimcp.config").options.fallback_recent = true
+vim.fn.mkdir(prev_dir .. "/e2e-shim2", "p")
+vim.cmd("cd " .. vim.fn.fnameescape(prev_dir .. "/e2e-shim2"))
+vim.wait(200)
+ok("fallback_recent=true flips via refresh", (own_entry() or {}).fallback_recent == true, vim.inspect(own_entry()))
+vim.cmd("cd " .. vim.fn.fnameescape(prev_dir))
+vim.fn.delete(prev_dir .. "/e2e-shim2", "d")
+require("nvimcp.config").options.fallback_recent = false
 vim.fn.delete(prev_dir .. "/e2e-shim", "d")
 
 local listed = tools.list()
