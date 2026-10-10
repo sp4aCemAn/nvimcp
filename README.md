@@ -65,7 +65,9 @@ unset) the proxy scans `<TMPDIR>/nvim.*/<random>/nvimcp/sessions.json`
 instead, since nvim's per-process runtime directory is not a stable path
 there. It connects lazily on the first tool
 request, so nvim can be started before or after the client, and it reconnects
-if you restart nvim mid-session.
+if you restart nvim mid-session. If no session exists yet, requests park and
+discovery is retried for up to `--wait` seconds (default 10) before an error
+is reported — so a client started while nvim is still booting does not fail.
 
 Your client config needs the proxy's absolute path — where that lives depends
 on your plugin manager, so don't guess: run `:NvimcpStatus` in nvim and copy

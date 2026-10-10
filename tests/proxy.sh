@@ -57,6 +57,64 @@ else
 fi
 rm -f tests/.ancestry.out
 
+# wait/retry: client starts with NO sessions file yet; file appears mid-wait;
+# parked tools/list must connect after discovery succeeds. Then a second run
+# with no file at all must surface the waited-error (timeout path).
+REPO="$PWD" FB_DIR="$REPO/tests/.wait-e2e" python3 - "$REPO" "$BOOTPID" "$SOCK" <<'EOF' || fail=1
+import json, os, subprocess, sys, threading, time, tempfile
+repo, bootpid, sock = sys.argv[1], sys.argv[2], sys.argv[3]
+fb = tempfile.mkdtemp(prefix="nvimcp-wait-e2e.")
+n_fail = [0]
+
+def check(name, cond, detail=""):
+    print(("PASS " if cond else "FAIL ") + name + ("" if cond else ": " + str(detail)[:200]))
+    if not cond:
+        n_fail[0] += 1
+
+late_path = os.path.join(fb, "late-sessions.json")
+p = subprocess.Popen(
+    [sys.executable, repo + "/proxy/nvimcp-proxy.py",
+     "--sessions-file", late_path, "--wait", "8", "--pid", bootpid],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+
+def send(msg):
+    p.stdin.write((json.dumps(msg) + "\n").encode()); p.stdin.flush()
+    return json.loads(p.stdout.readline())
+
+def driver():
+    send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    resp = send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+    names = [x.get("name") for x in resp.get("result", {}).get("tools", [])]
+    check("late-arrival tools/list succeeded after retry",
+          "result" in resp and "buffer_read" in names, resp)
+
+t = threading.Timer(25, p.kill); t.start()
+thread = threading.Thread(target=driver, daemon=True)
+thread.start()
+time.sleep(2.5)
+with open(late_path, "w") as f:
+    json.dump({"99991": {"pid": int(bootpid), "socket": sock, "cwd": "/tmp/unrelated",
+                          "registered_at": 1}}, f)
+thread.join(20)
+p.stdin.close(); p.wait(timeout=5); t.cancel()
+os.unlink(late_path)
+os.rmdir(fb)
+
+# timeout path: no file ever appears; error must mention the waited window
+p2 = subprocess.Popen(
+    [sys.executable, repo + "/proxy/nvimcp-proxy.py",
+     "--sessions-file", os.path.join(fb, "missing.json"), "--wait", "2"],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+p2.stdin.write((json.dumps({"jsonrpc": "2.0", "id": 9, "method": "tools/list", "params": {}}) + "\n").encode())
+p2.stdin.flush()
+line = json.loads(p2.stdout.readline())
+err = line.get("error", {}).get("message", "")
+check("waited-error surfaces on timeout", "waited" in err and "no nvimcp session" in err, err)
+p2.stdin.close(); p2.wait(timeout=5)
+
+sys.exit(1 if n_fail[0] else 0)
+EOF
+
 # fallback scenarios run from a cwd unrelated to any live session (mktemp)
 REPO="$PWD"
 FB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/nvimcp-e2e-fb.XXXXXX")

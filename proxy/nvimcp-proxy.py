@@ -17,7 +17,9 @@ SERVER_NAME = "nvimcp"
 SERVER_VERSION = "0.2.0"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_TIMEOUT = 30.0
+DEFAULT_WAIT = 10.0
 SELECT_TICK = 0.5
+CONNECT_RETRY = 0.5
 
 RPC_REQUEST = 0
 RPC_RESPONSE = 1
@@ -300,6 +302,7 @@ class NvimcpProxy:
         self.sessions_file_arg = args.sessions_file
         self.skip_ancestry = getattr(args, "skip_ancestry", False)
         self.timeout = args.timeout
+        self.wait = args.wait
         self.debug = args.debug
         self.sel = selectors.DefaultSelector()
         self.sock = None
@@ -308,6 +311,9 @@ class NvimcpProxy:
         self.stdin_rx = bytearray()
         self.pending = {}
         self.parked = []
+        self.connect_started = None
+        self.next_connect_retry = 0.0
+        self.last_connect_err = None
         self.next_msgid = 1
         self.exit_code = None
 
@@ -331,6 +337,7 @@ class NvimcpProxy:
                     elif key.data == "nvim":
                         self._on_nvim_data()
                 if self.exit_code is None:
+                    self._pump_connect()
                     self._check_timeouts()
         finally:
             self._close_nvim()
@@ -340,12 +347,27 @@ class NvimcpProxy:
     def _shutdown(self, code):
         self.exit_code = code
 
+    def _flush_parked_on_eof(self):
+        """stdin closed while waiting for a session: one last discovery try
+        via the normal pump, then report and go."""
+        self._pump_connect()
+        if self.parked and self.sock is None:
+            err = self.last_connect_err or "no nvimcp session found"
+            for mcp_id, _what, _params in self.parked:
+                self._send_mcp_error(mcp_id, -32603, err)
+            self.parked = []
+
     def _select_timeout(self):
+        timeout = SELECT_TICK
+        if self.parked and self.sock is None and self.connect_started is not None:
+            now = time.monotonic()
+            deadline = self.connect_started + self.wait
+            timeout = min(timeout, max(0.0, deadline - now), CONNECT_RETRY)
         if not self.pending:
-            return SELECT_TICK
+            return timeout
         now = time.monotonic()
         nearest = min(m["deadline"] for m in self.pending.values())
-        return max(0.0, min(nearest - now, SELECT_TICK))
+        return max(0.0, min(nearest - now, timeout))
 
     def _check_timeouts(self):
         now = time.monotonic()
@@ -365,9 +387,11 @@ class NvimcpProxy:
         try:
             chunk = os.read(0, 65536)
         except OSError:
+            self._flush_parked_on_eof()
             self._shutdown(0)
             return
         if not chunk:
+            self._flush_parked_on_eof()
             self._shutdown(0)
             return
         self.stdin_rx += chunk
@@ -436,11 +460,44 @@ class NvimcpProxy:
         try:
             if not self.connected:
                 self._connect()
-                self.parked.append((mcp_id, what, params))
+                self._park(mcp_id, what, params)
                 return
             self._send_nvimcp_rpc(mcp_id, what, params)
         except ProxyError as e:
-            self._send_mcp_error(mcp_id, -32603, str(e))
+            if self.wait > 0:
+                # No session (yet): park and retry discovery within the wait
+                # window so a client may start before nvim does.
+                self._park(mcp_id, what, params)
+                self.last_connect_err = str(e)
+                if self.connect_started is None:
+                    self.connect_started = time.monotonic()
+            else:
+                self._send_mcp_error(mcp_id, -32603, str(e))
+
+    def _park(self, mcp_id, what, params):
+        if not any(pe[0] == mcp_id for pe in self.parked):
+            self.parked.append((mcp_id, what, params))
+
+    def _pump_connect(self):
+        """Retry discovery while parked requests are older than the wait
+        window; report errors to their clients when the window expires."""
+        if self.sock is not None or not self.parked:
+            return
+        now = time.monotonic()
+        if self.connect_started is not None and now - self.connect_started > self.wait:
+            err = self.last_connect_err or "no nvimcp session found"
+            for mcp_id, _what, _params in self.parked:
+                self._send_mcp_error(
+                    mcp_id, -32603, "%s (waited %.0fs for an nvim session)" % (err, self.wait)
+                )
+            self.parked = []
+            return
+        if now >= self.next_connect_retry:
+            self.next_connect_retry = now + CONNECT_RETRY
+            try:
+                self._connect()
+            except ProxyError as e:
+                self.last_connect_err = str(e)
 
     def _sessions_files(self):
         if self.sessions_file_arg:
@@ -791,6 +848,12 @@ def main():
     p.add_argument("--sessions-file", help="path to sessions.json (default: $XDG_RUNTIME_DIR/nvimcp/sessions.json; on macOS all <TMPDIR>/nvim.<user>/<random>/nvimcp/sessions.json candidates are scanned)")
     p.add_argument("--skip-ancestry", action="store_true", help="disable terminal-ancestry session matching (testing hook; ancestry matching is otherwise always on)")
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="per-nvim-rpc timeout in seconds (default 30)")
+    p.add_argument(
+        "--wait",
+        type=float,
+        default=DEFAULT_WAIT,
+        help="seconds to retry session discovery while requests are parked before failing; 0 disables (default 10)",
+    )
     p.add_argument("--debug", action="store_true", help="log proxy activity to stderr")
     args = p.parse_args()
     sys.exit(NvimcpProxy(args).run())
