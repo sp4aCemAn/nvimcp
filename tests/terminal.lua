@@ -127,8 +127,12 @@ if send_supported then
 		end
 	end
 
-	local sent, sent_err = tools.call("term_send", { name = "mcp-test", data = "echo hello" })
+	local sent, sent_err = tools.call("term_send", { name = "mcp-test", data = "echo hello", wait_ms = 800, read_lines = 10 })
 	ok("term_send allowed on enabled terminal", sent and sent.sent == true, vim.inspect(sent_err))
+	ok("term_send settles", sent and (sent.settled == true or sent.settled == false), vim.inspect(sent))
+	ok("term_send includes a tail read", sent and type(sent.lines) == "table" and sent.line_range ~= nil, vim.inspect(sent))
+	local no_tail, no_tail_err = tools.call("term_send", { name = "mcp-test", data = "echo tail-off", read_lines = 0 })
+	ok("read_lines=0 skips the tail read", no_tail and no_tail.sent == true and no_tail.lines == nil, vim.inspect(no_tail_err))
 
 	-- Output actually landed in the pty and is readable through the MCP tool.
 	-- (Read a wide window: the cat echo sits at the top of a static screen.)
