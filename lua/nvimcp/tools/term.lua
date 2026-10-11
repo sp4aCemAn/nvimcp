@@ -177,18 +177,87 @@ local function read_tail(t, name, opts)
 end
 
 local function has_content(lines)
-  for _, l in ipairs(lines) do
-    if vim.trim(l or "") ~= "" then
-      return true
-    end
-  end
-  return false
+	for _, l in ipairs(lines) do
+		if vim.trim(l or "") ~= "" then
+			return true
+		end
+	end
+	return false
+end
+
+-- Collapse runs of blank grid rows into annotated markers while keeping
+-- first_line + index coordinates real. Terminal buffers are grid snapshots,
+-- not transcripts — a quiet 66-row shell reads as 1 prompt + 65 blanks.
+local function condense_lines(lines, first_line)
+	first_line = first_line or 1
+	local out, run = {}, 0
+	for i, text in ipairs(lines) do
+		if vim.trim(text or "") == "" then
+			run = run + 1
+		else
+			if run > 0 then
+				if run > 2 then
+					local from, to = first_line + i - run - 1, first_line + i - 2
+					table.insert(out, from == to
+						and string.format("      ┆ row %d blank", from)
+						or string.format("      ┆ rows %d-%d blank (%d lines)", from, to, run))
+				else
+					for _ = 1, run do table.insert(out, "") end
+				end
+				run = 0
+			end
+			table.insert(out, text)
+		end
+	end
+	if run > 0 then
+		local from = first_line + #lines - run
+		if run > 2 then
+			table.insert(out, string.format("      ┆ rows %d-%d blank to end of screen (%d lines)", from, from + run - 1, run))
+		else
+			for _ = 1, run do table.insert(out, "") end
+		end
+	end
+	return out
+end
+
+-- Where the shell's cursor sits (next output lands there). Available only
+-- while the terminal buffer is displayed in some window; nil when hidden or
+-- errored. for the registered buffer state we defer to the caller.
+local function term_cursor(buf)
+	if not buf or not vim.api.nvim_buf_is_valid(buf) then
+		return nil
+	end
+	for _, w in ipairs(vim.api.nvim_list_wins()) do
+		local ok, wbuf = pcall(vim.api.nvim_win_get_buf, w)
+		if ok and wbuf == buf then
+			local okc, cur = pcall(vim.api.nvim_win_get_cursor, w)
+			if okc then
+				return { line = cur[1], col = cur[2] }
+			end
+		end
+	end
+	return nil
+end
+
+-- Read + post-process the lines requested: condense blank runs into span
+-- markers unless raw requested; scrub always; cap always.
+local function present_lines(r, n, condensed)
+	local lines = r.lines or {}
+	local first_line = (r.line_range and r.line_range.start) and r.line_range.start or 1
+	local out_lines
+	if condensed and has_content(lines) then
+		out_lines = condense_lines(lines, first_line)
+	else
+		out_lines = sanitize.scrub_lines(lines)
+	end
+	local out, _, truncated = sanitize.truncate_table(out_lines, n)
+	return out, truncated
 end
 
 local function register_term_read()
 	tools.register({
 		name = "term_read",
-		description = "Read lines from a terminal's scrollback (name from term_list); reads the last n lines by default, or a [start_line, start_line+n) window with start_line. Output is always scrubbed for secrets and capped by the server's max_output_lines setting. Works on running and exited terminals.",
+		description = "Read lines from a terminal's scrollback (name from term_list); reads the last n lines by default, or a [start_line, start_line+n) window with start_line. Blank runs are collapsed to span markers (condensed) — pass condensed=false to read the grid raw. Output is always scrubbed for secrets and capped by the server's max_output_lines setting. Works on running and exited terminals.",
 		inputSchema = {
 			type = "object",
 			properties = {
@@ -197,6 +266,10 @@ local function register_term_read()
 				start_line = {
 					type = "integer",
 					description = "1-based first buffer line; when given, reads start_line..start_line+n-1 instead of the last n lines",
+				},
+				condensed = {
+					type = "boolean",
+					description = "Collapse blank runs into span markers (default true); false returns the raw grid rows",
 				},
 			},
 			required = { "name" },
@@ -209,8 +282,9 @@ local function register_term_read()
 			local name = required_name(args)
 			local n = output_cap(args and args.n)
 			local start = args and args.start_line
+			local condensed = not (args and args.condensed == false)
 			local r = read_tail(t, name, { n = n, start = start and math.max(1, math.floor(start)) or nil })
-			local out, _, truncated = sanitize.truncate_table(sanitize.scrub_lines(r.lines), n)
+			local out, truncated = present_lines(r, n, condensed)
 			return {
 				name = name,
 				running = r.running,
@@ -219,6 +293,8 @@ local function register_term_read()
 				exit_code = r.exit_code,
 				total_lines = r.total_lines,
 				line_range = r.line_range,
+				condensed = condensed,
+				cursor = state_for(t, name) and term_cursor((state_for(t, name) or {}).buf) or nil,
 				lines = out,
 				truncated = truncated,
 			}
@@ -242,6 +318,10 @@ local function register_term_send()
 				read_lines = {
 					type = "integer",
 					description = "Include up to this many lines in the tool result (default 25; 0 skips the read)",
+				},
+				condensed = {
+					type = "boolean",
+					description = "Collapse blank runs into span markers (default true); false returns the raw grid rows",
 				},
 			},
 			required = { "name", "data" },
@@ -270,6 +350,7 @@ local function register_term_send()
 				error("sending to terminal '" .. name .. "' failed: " .. tostring(res))
 			end
 			if res.ok then
+				local condensed = not (args and args.condensed == false)
 				local out = {
 					sent = true,
 					name = name,
@@ -296,8 +377,10 @@ local function register_term_send()
 						out.dead = r.dead
 						out.pid = r.pid
 						out.exit_code = r.exit_code
-						local out_lines, _, truncated =
-							sanitize.truncate_table(sanitize.scrub_lines(r.lines or {}), n)
+						out.condensed = condensed
+						local buf = state_for(t, name) and state_for(t, name).buf
+						out.cursor = term_cursor(buf)
+						local out_lines, truncated = present_lines(r, n, condensed)
 						out.lines = out_lines
 						out.truncated = truncated
 					else

@@ -131,6 +131,7 @@ if send_supported then
 	ok("term_send allowed on enabled terminal", sent and sent.sent == true, vim.inspect(sent_err))
 	ok("term_send settles", sent and (sent.settled == true or sent.settled == false), vim.inspect(sent))
 	ok("term_send includes a tail read", sent and type(sent.lines) == "table" and sent.line_range ~= nil, vim.inspect(sent))
+	ok("term_send honours condensed flag", sent and (sent.condensed == true or sent.condensed == false), vim.inspect(sent))
 	local no_tail, no_tail_err = tools.call("term_send", { name = "mcp-test", data = "echo tail-off", read_lines = 0 })
 	ok("read_lines=0 skips the tail read", no_tail and no_tail.sent == true and no_tail.lines == nil, vim.inspect(no_tail_err))
 
@@ -146,6 +147,24 @@ if send_supported then
 		end
 	end
 	ok("term_read sees the command output", #text > 0 and text:find("echo hello", 1, true) ~= nil, vim.inspect(text))
+
+	-- condensed mode: blank runs collapse to span markers; grid-faithful mode
+	-- (condensed=false) returns the raw rows; content survives both.
+	local grid = tools.call("term_read", { name = "mcp-test", n = 50, condensed = false })
+	local slim = tools.call("term_read", { name = "mcp-test", n = 50 })
+	ok("condensed collapses blank runs",
+		grid and grid.line_range ~= nil and slim and slim.condensed == true
+			and #slim.lines <= (#grid.lines / 2 + 1),
+		vim.inspect({ gridN = grid and #grid.lines, slimN = slim and #slim.lines }))
+	ok("grid-faithful rows survive condensed=false",
+		grid and #grid.lines > 0 and #grid.lines >= (#slim and #slim.lines or #grid.lines - 40),
+		vim.inspect({ gridN = grid and #grid.lines, slimN = slim and #slim.lines }))
+	ok("condensed keeps content",
+		#text > 0 and table.concat(slim and slim.lines or {}, "\n"):find("hello", 1, true) ~= nil,
+		vim.inspect(slim and slim.lines))
+	local cur = slim and slim.cursor
+	ok("cursor reported when visible", cur == nil or (type(cur.line) == "number" and type(cur.col) == "number"),
+		vim.inspect(cur))
 
 	-- Policy: a denied command returns a policy_denied tool error, terminal unharmed.
 	local pol_res, pol_err = tools.call("term_send", { name = "mcp-test", data = "python3 -V" })
