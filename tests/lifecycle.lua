@@ -40,7 +40,7 @@ ok("proxy_path resolves to a real file", ppath ~= nil and ppath:match("nvimcp%-p
 
 nvimcp.setup({ autostart = false })
 local cfg = require("nvimcp.config").options
-ok("config defaults correct", cfg.autostart == false and cfg.allow_edit == true and cfg.rate_limit.calls == 10 and cfg.terminals.enabled == false)
+ok("config defaults correct", cfg.autostart == false and cfg.allow_edit == true and cfg.rate_limit.calls == 60 and cfg.terminals.enabled == false)
 
 -- sanitization: bare keys, not just key=value context
 ok("scrub bare aws key", sanitize.scrub("value AKIAABCDEFGHIJKLMNOP here"):match("AKIA") == nil, sanitize.scrub("value AKIAABCDEFGHIJKLMNOP here"))
@@ -265,6 +265,21 @@ res = server.rpc("call_tool", { name = "buffer_list" })
 ok("rate limit", res.error ~= nil, vim.inspect(res))
 require("nvimcp.config").options.rate_limit = { calls = 10, window = 5 }
 
+-- rejected calls must not extend the rate window (retry-livelock regression):
+-- a denied call leaves no timestamp, so once the window passes the client
+-- recovers even though it kept retrying while limited.
+require("nvimcp.config").options.rate_limit = { calls = 1, window = 3 }
+nvimcp.stop()
+nvimcp.start() -- clears call_times
+local rec1 = server.rpc("call_tool", { name = "buffer_list" })
+vim.wait(1500)
+local rec2 = server.rpc("call_tool", { name = "buffer_list" })
+vim.wait(1800)
+local rec3 = server.rpc("call_tool", { name = "buffer_list" })
+ok("rejected calls do not extend rate window", rec1.error == nil and rec2.error ~= nil and rec3.error == nil,
+	vim.inspect({ rec1.error, rec2.error, rec3.error }))
+require("nvimcp.config").options.rate_limit = { calls = 10, window = 5 }
+
 res = server.rpc(" bogus ", {})
 ok("unknown method", res.error ~= nil)
 
@@ -311,20 +326,22 @@ require("nvimcp.config").options.terminals.enabled = false
 clear_tools_loaded()
 require("nvimcp.tools").list()
 
--- stale sessions entries (dead socket) are pruned on next start
-local sessions_file = server.sessions_path()
-local okdec, sdata = pcall(vim.json.decode, table.concat(vim.fn.readfile(sessions_file), "\n"))
-if okdec and type(sdata) == "table" then
-	sdata["999999999999"] = { pid = 999999999999, socket = "/nonexistent-nvimcp-test.sock", cwd = "/tmp", config = "/tmp" }
-	vim.fn.writefile({ vim.json.encode(sdata) }, sessions_file)
+-- stale sessions shards (dead socket) are pruned on next start; own shard
+-- survives the stop/start cycle (per-pid files: no shared read-modify-write)
+local shard = server.sessions_path()
+local sdir = server.sessions_dir()
+local stale_shard = sdir .. "/999999999999.json"
+local okdec, sdata = pcall(vim.json.decode, table.concat(vim.fn.readfile(shard), "\n"))
+if okdec and type(sdata) == "table" and vim.fn.isdirectory(sdir) == 1 then
+	vim.fn.writefile({ vim.json.encode({ ["999999999999"] = { pid = 999999999999, socket = "/nonexistent-nvimcp-test.sock", cwd = "/tmp", config = "/tmp" } }) }, stale_shard)
 	nvimcp.stop()
 	nvimcp.start()
-	local okdec2, after = pcall(vim.json.decode, table.concat(vim.fn.readfile(sessions_file), "\n"))
-	ok("stale sessions entry pruned", okdec2 and after["999999999999"] == nil, vim.inspect(after))
+	ok("stale sessions shard pruned", vim.uv.fs_stat(stale_shard) == nil, stale_shard)
+	local okdec2, after = pcall(vim.json.decode, table.concat(vim.fn.readfile(server.sessions_path()), "\n"))
 	ok("own sessions entry kept", okdec2 and after[tostring(vim.fn.getpid())] ~= nil, vim.inspect(after))
-	ok("sessions tmp file cleaned", vim.uv.fs_stat(sessions_file .. "." .. vim.fn.getpid() .. ".tmp") == nil)
+	ok("sessions tmp file cleaned", vim.uv.fs_stat(server.sessions_path() .. "." .. vim.fn.getpid() .. ".tmp") == nil)
 else
-	fail("prune setup", "could not read sessions file")
+	fail("prune setup", "could not read sessions shard")
 end
 
 -- rpc on a stopped server reports "not started" without burning rate slots

@@ -28,7 +28,7 @@ def ok(name, cond, detail=""):
 
 
 def make_proxy():
-	args = types.SimpleNamespace(socket=None, pid=None, sessions_file=None, timeout=30.0, debug=False)
+	args = types.SimpleNamespace(socket=None, pid=None, sessions_file=None, timeout=30.0, wait=10.0, debug=False)
 	return proxy.NvimcpProxy(args)
 
 
@@ -82,6 +82,19 @@ def main():
 			"chain[0]=%r ppid=%r" % (chain[0] if chain else None, os.getppid()))
 		ok("ancestor chain is bounded ints", all(isinstance(x, int) and x > 1 for x in chain), chain)
 		ok("ancestor chain has no duplicates... bounded growth", len(chain) <= 32, chain)
+
+		# ancestry is cached: discovery retries must not re-walk ps(1) per pass
+		calls = [0]
+		def counting_walk():
+			calls[0] += 1
+			return chain
+		p2 = make_proxy()
+		p2._ancestor_pid_chain = counting_walk
+		a1 = p2._ancestor_pids()
+		a2 = p2._ancestor_pids()
+		a3 = p2._ancestor_pids()
+		ok("ancestor pids cached across discovery retries",
+			calls[0] == 1 and a1 is a2 is a3 and a1 == chain, "walks=%d" % calls[0])
 
 	if n_fail > 0:
 		print("discovery tests: %d failures" % n_fail)

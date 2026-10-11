@@ -64,7 +64,7 @@ function M.status()
 	}
 	if M.is_running() then
 		table.insert(lines, "socket: " .. server.socket_path())
-		table.insert(lines, "sessions file: " .. server.sessions_path())
+		table.insert(lines, "session shard: " .. server.sessions_path())
 	else
 		table.insert(lines, "socket: (not started)")
 	end

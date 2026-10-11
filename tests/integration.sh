@@ -55,10 +55,10 @@ echo done > tests/.stop
 wait "$bootpid" 2>/dev/null || true
 trap - EXIT
 
-SESS="$(dirname "$SOCK")/sessions.json"
+SHARD="$(dirname "$SOCK")/sessions/$BOOTPID.json"
 STALE=0
-[ -f "$SESS" ] && STALE=$(grep -c "\"$BOOTPID\"" "$SESS" || true)
-check "$STALE" "0" "cross-process: VimLeave cleans sessions entry" || true
+[ -f "$SHARD" ] && STALE=$(grep -c "\"$BOOTPID\"" "$SHARD" || true)
+check "$STALE" "0" "cross-process: VimLeave cleans sessions shard" || true
 
 check "$([ -e "$SOCK" ] && echo yes || echo no)" "no" "cross-process: socket removed on exit" || true
 

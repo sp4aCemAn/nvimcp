@@ -316,6 +316,20 @@ class NvimcpProxy:
         self.last_connect_err = None
         self.next_msgid = 1
         self.exit_code = None
+        self._ancestors = None
+
+    def _ancestor_pids(self):
+        """Ancestor chain, computed once and cached.
+
+        Discovery re-runs on every retry while parked; re-walking with ps(1)
+        each time is a process storm under load (32 spawns per pass), and a
+        timed-out walk truncates the chain — losing the exact-owner match and
+        silently falling back to cwd heuristics. The chain is launch-time
+        truth; a re-walk after an intermediate shell exits follows the
+        re-parented chain and misses the nvim ancestor entirely."""
+        if self._ancestors is None:
+            self._ancestors = self._ancestor_pid_chain()
+        return self._ancestors
 
     def _log(self, msg):
         if self.debug:
@@ -499,25 +513,40 @@ class NvimcpProxy:
             except ProxyError as e:
                 self.last_connect_err = str(e)
 
+    def _session_candidates(self, base):
+        """Registry files under one runtime base: legacy sessions.json plus the
+        per-pid shards in base/sessions/. Both hold the same {pid: entry} shape,
+        so the discovery loop parses them interchangeably."""
+        paths = []
+        legacy = os.path.join(base, "sessions.json")
+        if os.path.isfile(legacy):
+            paths.append(legacy)
+        paths += sorted(glob.glob(os.path.join(base, "sessions", "*.json")))
+        return paths
+
     def _sessions_files(self):
         if self.sessions_file_arg:
+            if os.path.isdir(self.sessions_file_arg):
+                cands = self._session_candidates(self.sessions_file_arg)
+                return cands or [self.sessions_file_arg]
             return [self.sessions_file_arg]
         xdg = os.environ.get("XDG_RUNTIME_DIR")
         if xdg:
-            return [os.path.join(xdg, "nvimcp", "sessions.json")]
+            return self._session_candidates(os.path.join(xdg, "nvimcp"))
         if sys.platform == "darwin":
             # stdpath("run") on macOS is $TMPDIR/nvim.<user>/<random> (unique per
-            # nvim process), so the sessions file path is not stable: find every
+            # nvim process), so session registry paths are not stable: find every
             # running session by globbing (the dir may be named after the
             # username or the uid).
             tmp = tempfile.gettempdir()
             paths = []
             for b in sorted(glob.glob(os.path.join(tmp, "nvim.*"))):
-                for p in sorted(glob.glob(os.path.join(b, "*", "nvimcp", "sessions.json"))):
-                    if p not in paths:
-                        paths.append(p)
+                for d in sorted(glob.glob(os.path.join(b, "*", "nvimcp"))):
+                    for p in self._session_candidates(d):
+                        if p not in paths:
+                            paths.append(p)
             return paths
-        return ["/run/user/%d/nvimcp/sessions.json" % os.getuid()]
+        return self._session_candidates("/run/user/%d/nvimcp" % os.getuid())
 
     def _describe(self, entries):
         return ", ".join("pid %s (%s)" % (e.get("pid"), e.get("cwd", "?")) for e in entries)
@@ -590,11 +619,17 @@ class NvimcpProxy:
         if self.socket_arg:
             return {"socket": self.socket_arg, "pid": None}
         paths = self._sessions_files()
-        if paths == ["/run/user/%d/nvimcp/sessions.json" % os.getuid()] and not os.path.exists(paths[0]):
+        if (
+            not paths
+            and not self.sessions_file_arg
+            and not os.environ.get("XDG_RUNTIME_DIR")
+            and sys.platform != "darwin"
+        ):
             raise ProxyError(
-                "no sessions file at %s; is nvim running with nvimcp started? "
+                "no sessions registry at /run/user/%d/nvimcp (sessions.json or sessions/*.json); "
+                "is nvim running with nvimcp started? "
                 "(this is the Linux default path; on macOS pass --sessions-file, --pid "
-                "or --socket)" % paths[0]
+                "or --socket)" % os.getuid()
             )
         entries = []
         seen_sockets = set()
@@ -627,7 +662,7 @@ class NvimcpProxy:
         # child of an nvimcp session's process tree) belongs to that session,
         # regardless of the shell's cwd.
         if not self.skip_ancestry:
-            for apid in self._ancestor_pid_chain():
+            for apid in self._ancestor_pids():
                 for e in entries:
                     if e.get("pid") == apid:
                         self._log("matched session pid %s via terminal ancestry" % apid)
@@ -844,8 +879,8 @@ def main():
         ),
     )
     p.add_argument("--socket", help="connect to this nvimcp unix socket directly")
-    p.add_argument("--pid", type=int, help="pick this nvim pid from the sessions file")
-    p.add_argument("--sessions-file", help="path to sessions.json (default: $XDG_RUNTIME_DIR/nvimcp/sessions.json; on macOS all <TMPDIR>/nvim.<user>/<random>/nvimcp/sessions.json candidates are scanned)")
+    p.add_argument("--pid", type=int, help="pick this nvim pid from the session registry")
+    p.add_argument("--sessions-file", help="session registry file or directory (default: $XDG_RUNTIME_DIR/nvimcp; on macOS all <TMPDIR>/nvim.<user>/<random>/nvimcp candidates are scanned; reads legacy sessions.json and sessions/<pid>.json shards)")
     p.add_argument("--skip-ancestry", action="store_true", help="disable terminal-ancestry session matching (testing hook; ancestry matching is otherwise always on)")
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="per-nvim-rpc timeout in seconds (default 30)")
     p.add_argument(

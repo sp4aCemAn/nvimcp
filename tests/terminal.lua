@@ -112,6 +112,8 @@ if send_supported then
 		tostring(deny_err))
 	local st3 = (terminals.get and terminals.get("mcp-test")) or (terminals.terminals or {})["mcp-test"]
 	ok("denial keeps the terminal alive", st3 and st3.buf and vim.api.nvim_buf_is_valid(st3.buf))
+	ok("denied send releases its claim", next(require("nvimcp.tools.term")._sending) == nil,
+		vim.inspect(require("nvimcp.tools.term")._sending))
 
 	-- Enable agent control the way the user would: global config + per-term toggle.
 	require("nvimterminals.config").setup({ terminal_cmd = "/bin/cat", agent = { enabled = true, allow = { "echo" } } })
@@ -134,6 +136,18 @@ if send_supported then
 	ok("term_send honours condensed flag", sent and (sent.condensed == true or sent.condensed == false), vim.inspect(sent))
 	local no_tail, no_tail_err = tools.call("term_send", { name = "mcp-test", data = "echo tail-off", read_lines = 0 })
 	ok("read_lines=0 skips the tail read", no_tail and no_tail.sent == true and no_tail.lines == nil, vim.inspect(no_tail_err))
+
+	-- Busy guard: while a name is claimed by an in-flight send, a concurrent
+	-- second send must fail fast rather than interleave at the wait_ms yield.
+	require("nvimcp.tools.term")._sending["mcp-test"] = true
+	local busy_res, busy_err = tools.call("term_send", { name = "mcp-test", data = "echo busy" })
+	ok("term_send rejects when terminal busy",
+		busy_res == nil and tostring(busy_err):find("busy") ~= nil, tostring(busy_err))
+	ok("rejected concurrent send does not leak the claim",
+		require("nvimcp.tools.term")._sending["mcp-test"] == true)
+	require("nvimcp.tools.term")._sending["mcp-test"] = nil
+	local after_busy, after_busy_err = tools.call("term_send", { name = "mcp-test", data = "echo after busy", read_lines = 0 })
+	ok("send proceeds once claim is released", after_busy and after_busy.sent == true, vim.inspect(after_busy_err))
 
 	-- Output actually landed in the pty and is readable through the MCP tool.
 	-- (Read a wide window: the cat echo sits at the top of a static screen.)

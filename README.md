@@ -41,7 +41,7 @@ By default the server starts automatically (`autostart = true`).
 
 - `:NvimcpStart` — start the server
 - `:NvimcpStop` — stop it
-- `:NvimcpStatus` — floating status pane (socket path, session file, proxy path, tool list)
+- `:NvimcpStatus` — floating status pane (socket path, session shard, proxy path, tool list)
 
 ## Connecting MCP clients (phase 2)
 
@@ -49,7 +49,7 @@ By default the server starts automatically (`autostart = true`).
               <— unix socket (msgpack-RPC) —> live nvim —> nvimcp tools
 
 `proxy/nvimcp-proxy.py` (Python stdlib only) finds your nvim session
-automatically: `--socket` wins; else `--pid` picks from the sessions file; else
+automatically: `--socket` wins; else `--pid` picks from the session registry; else
 **terminal ancestry** — an agent launched inside one of this session's
 terminals (any process descendant of that nvim) belongs to that session, even
 if the agent's shell cd'ed to a different directory; else the session whose
@@ -60,8 +60,9 @@ session whose nvimcp config set `fallback_recent = true` (warned; strict
 refusal otherwise), or to the sole live session when that's the only one.
 Entries left behind by crashed
 nvim sessions are detected by pid and ignored. Sessions are discovered from
-`$XDG_RUNTIME_DIR/nvimcp/sessions.json`; on macOS (where that variable is
-unset) the proxy scans `<TMPDIR>/nvim.*/<random>/nvimcp/sessions.json`
+`$XDG_RUNTIME_DIR/nvimcp` (`sessions/<pid>.json` registry shards, plus any
+legacy `sessions.json`); on macOS (where that variable is
+unset) the proxy scans `<TMPDIR>/nvim.*/<random>/nvimcp`
 instead, since nvim's per-process runtime directory is not a stable path
 there. It connects lazily on the first tool
 request, so nvim can be started before or after the client, and it reconnects
@@ -134,8 +135,9 @@ Claude Desktop (`claude_desktop_config.json`) and Cursor (`~/.cursor/mcp.json`):
 ```
 
 Multiple nvim sessions? Pin one with `--pid <pid>` (see `:NvimcpStatus` or the
-sessions file) or `--socket <path>`. Agents can be chatty — consider
-`rate_limit = { calls = 60, window = 5 }` when pairing with an MCP client.
+sessions directory) or `--socket <path>`. The rate budget is per nvim session,
+shared by every agent attached to it — agents can be chatty, so tune
+`rate_limit` up or disable it when many agents pair with one session.
 Debugging: run the proxy directly with `--debug` and paste JSON lines into it.
 
 ## Config
@@ -147,10 +149,10 @@ require("nvimcp").setup({})
 	autostart = true,            -- start server on load
 	start_if = nil,              -- function():boolean to suppress autostart
 	socket_dir = nil,            -- default: $XDG_RUNTIME_DIR-equivalent (stdpath("run"))/nvimcp
-	write_sessions = true,       -- maintain sessions.json for client discovery
+	write_sessions = true,       -- maintain session registry shards (sessions/<pid>.json) for client discovery
 	fallback_recent = false,     -- agents opened anywhere may reach THIS session when no
 	                             -- cwd/ancestor/terminal-ancestry match exists (see Discovery)
-	rate_limit = { calls = 10, window = 5 }, -- tool calls per window (seconds); nil disables
+	rate_limit = { calls = 60, window = 5 }, -- tool calls per window (seconds); nil disables
 	max_output_lines = 500,      -- cap on lines returned per tool call
 	allow_edit = true,           -- register buffer_edit; false = tool not registered (read-only server)
 	disable = {},                -- tool names to unregister, e.g. { "buffer_edit" }

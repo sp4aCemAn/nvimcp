@@ -12,8 +12,13 @@ function M.socket_path()
 	return sock
 end
 
+function M.sessions_dir()
+	return M.socket_dir() .. "/sessions"
+end
+
+-- Own registry shard: one file per nvim pid, {pid = entry} inside.
 function M.sessions_path()
-	return M.socket_dir() .. "/sessions.json"
+	return M.sessions_dir() .. "/" .. tostring(vim.fn.getpid()) .. ".json"
 end
 
 local function ensure_dir()
@@ -24,21 +29,18 @@ local function ensure_dir()
 	return dir
 end
 
-local function sessions_read()
-	local f = M.sessions_path()
-	local ok, lines = pcall(vim.fn.readfile, f)
-	if not ok or not lines or #lines == 0 then
-		return {}
-	end
-	local ok2, data = pcall(vim.json.decode, table.concat(lines, "\n"))
-	if not ok2 or type(data) ~= "table" then
-		return {}
-	end
-	return data
+local function session_entry()
+	return {
+		pid = vim.fn.getpid(),
+		socket = sock,
+		cwd = vim.uv.cwd(),
+		config = vim.fn.stdpath("config"),
+		registered_at = os.time(),
+		fallback_recent = config.options.fallback_recent and true or false,
+	}
 end
 
-local function sessions_write(data)
-	local path = M.sessions_path()
+local function shard_write(path, data)
 	local tmp = path .. string.format(".%d.tmp", vim.fn.getpid())
 	local fh, err = vim.uv.fs_open(tmp, "w", 384)
 	if not fh then
@@ -59,42 +61,58 @@ local function sessions_write(data)
 	end
 end
 
+-- Unreadable/undecodable shards count as stale; a live session's shard is
+-- always complete (tmp + rename), so pruning can never see a torn file.
+local function shard_stale(path)
+	local okf, lines = pcall(vim.fn.readfile, path)
+	if not okf or not lines or #lines == 0 then
+		return true
+	end
+	local okd, data = pcall(vim.json.decode, table.concat(lines, "\n"))
+	if not okd or type(data) ~= "table" then
+		return true
+	end
+	for _, entry in pairs(data) do
+		local entry_socket = type(entry) == "table" and entry.socket
+		if entry_socket and vim.uv.fs_stat(entry_socket) ~= nil then
+			return false
+		end
+	end
+	return true
+end
+
+-- One shard per nvim pid: a writer only ever touches its own file, so
+-- concurrent sessions cannot clobber each other's registry entry (the old
+-- shared sessions.json read-modify-write raced and silently lost live
+-- sessions). Shards keep the legacy {pid = entry} shape so readers parse
+-- old files and shards interchangeably. Stale shards (dead socket) are
+-- unlinked on update — unlink-only, no shared writes, race-free. Safe by
+-- construction: M.start binds the socket before the first sessions_update,
+-- and M.stop unlinks the socket before the shard, so a live session's shard
+-- can only be pruned a moment before its own remove deletes it anyway.
 local function sessions_update()
 	if not config.options.write_sessions then
 		return
 	end
-	local me = tostring(vim.fn.getpid())
-	local data = sessions_read()
-	for k, entry in pairs(data) do
-		if k ~= me then
-			local entry_socket = type(entry) == "table" and entry.socket
-			if not entry_socket or vim.uv.fs_stat(entry_socket) == nil then
-				data[k] = nil
-			end
+	local dir = M.sessions_dir()
+	if vim.fn.isdirectory(dir) == 0 then
+		vim.fn.mkdir(dir, "p", "0700")
+	end
+	for _, path in ipairs(vim.fn.glob(dir .. "/*.json", false, true)) do
+		if path ~= M.sessions_path() and shard_stale(path) then
+			pcall(vim.uv.fs_unlink, path)
 		end
 	end
-	data[me] = {
-		pid = vim.fn.getpid(),
-		socket = sock,
-		cwd = vim.uv.cwd(),
-		config = vim.fn.stdpath("config"),
-		registered_at = os.time(),
-		fallback_recent = config.options.fallback_recent and true or false,
-	}
-	sessions_write(data)
+	shard_write(M.sessions_path(), { [tostring(vim.fn.getpid())] = session_entry() })
 end
 
 local function sessions_remove()
 	if not config.options.write_sessions then
 		return
 	end
-	local data = sessions_read()
-	data[tostring(vim.fn.getpid())] = nil
-	if vim.tbl_isempty(data) then
-		pcall(vim.fn.delete, M.sessions_path())
-	else
-		sessions_write(data)
-	end
+	pcall(vim.uv.fs_unlink, M.sessions_path())
+	-- tidy: best-effort; fails while other sessions still hold shards
+	pcall(vim.uv.fs_rmdir, M.sessions_dir())
 end
 
 local function arm_exit_cleanup()
@@ -157,9 +175,15 @@ local function rate_ok()
 			table.insert(kept, t)
 		end
 	end
+	-- Record only allowed calls: rejected attempts must not extend the window,
+	-- otherwise a retrying client keeps itself locked out (livelock).
+	if #kept >= rl.calls then
+		call_times = kept
+		return false, #kept
+	end
 	table.insert(kept, now)
 	call_times = kept
-	return #kept <= rl.calls, #kept
+	return true, #kept
 end
 
 local function handle(method, params)

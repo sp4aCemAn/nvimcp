@@ -6,7 +6,7 @@ local defaults = {
 	socket_dir = nil,
 	write_sessions = true,
 	fallback_recent = false, -- allow agents opened anywhere to reach THIS session when no cwd/ancestor matches (see README)
-	rate_limit = { calls = 10, window = 5 },
+	rate_limit = { calls = 60, window = 5 },
 	max_output_lines = 500,
 	allow_edit = true,
 	disable = {},

@@ -4,6 +4,13 @@ local tools = require("nvimcp.tools")
 
 local M = {}
 
+-- Internal: terminal names with a term_send in flight (send + wait + read).
+-- term_send claims its name so a concurrent second agent send fails fast
+-- instead of interleaving at the wait_ms yield and getting its post-send
+-- read tangled with the first agent's output. Exposed as M._sending for tests.
+local sending = {}
+M._sending = sending
+
 -- Resolve the nvimterminals plugin. The API may live on the init module or
 -- the terminals submodule depending on version; prefer whichever exposes it.
 -- The tools degrade gracefully: term_list/term_read work with the plain
@@ -285,6 +292,7 @@ local function register_term_read()
 			local condensed = not (args and args.condensed == false)
 			local r = read_tail(t, name, { n = n, start = start and math.max(1, math.floor(start)) or nil })
 			local out, truncated = present_lines(r, n, condensed)
+			local st = state_for(t, name)
 			return {
 				name = name,
 				running = r.running,
@@ -294,7 +302,7 @@ local function register_term_read()
 				total_lines = r.total_lines,
 				line_range = r.line_range,
 				condensed = condensed,
-				cursor = state_for(t, name) and term_cursor((state_for(t, name) or {}).buf) or nil,
+				cursor = st and term_cursor(st.buf) or nil,
 				lines = out,
 				truncated = truncated,
 			}
@@ -342,20 +350,29 @@ local function register_term_send()
 			if data:sub(-1) ~= "\n" and data:sub(-1) ~= "\r" then
 				data = data .. "\n"
 			end
+			if sending[name] then
+				error(("term_send: terminal '%s' is busy (another send is in flight); retry shortly"):format(name))
+			end
 			local wait_ms = args and args.wait_ms
 			local read_lines_out = (args and args.read_lines)
 			read_lines_out = (read_lines_out == nil and 25) or math.max(0, math.floor(read_lines_out))
-			local ok, res = pcall(t.send, name, data, { lstrip = false, wait_ms = wait_ms })
-			if not ok or type(res) ~= "table" then
-				error("sending to terminal '" .. name .. "' failed: " .. tostring(res))
-			end
-			if res.ok then
+			sending[name] = true
+			local ok, res = pcall(function()
+				local oks, sr = pcall(t.send, name, data, { lstrip = false, wait_ms = wait_ms })
+				if not oks or type(sr) ~= "table" then
+					error("sending to terminal '" .. name .. "' failed: " .. tostring(sr))
+				end
+				if not sr.ok then
+					-- Denial: surface the authorization reason verbatim as a tool error.
+					error(("term_send denied (%s)%s"):format(
+						sr.reason or "unknown", sr.detail and (": " .. tostring(sr.detail)) or ""))
+				end
 				local condensed = not (args and args.condensed == false)
 				local out = {
 					sent = true,
 					name = name,
 					bytes = #data,
-					settled = res.settled == 1 or res.settled == true or false,
+					settled = sr.settled == 1 or sr.settled == true or false,
 				}
 				if read_lines_out > 0 then
 					local n = output_cap(read_lines_out)
@@ -378,8 +395,8 @@ local function register_term_send()
 						out.pid = r.pid
 						out.exit_code = r.exit_code
 						out.condensed = condensed
-						local buf = state_for(t, name) and state_for(t, name).buf
-						out.cursor = term_cursor(buf)
+						local st = state_for(t, name)
+						out.cursor = st and term_cursor(st.buf)
 						local out_lines, truncated = present_lines(r, n, condensed)
 						out.lines = out_lines
 						out.truncated = truncated
@@ -388,11 +405,12 @@ local function register_term_send()
 					end
 				end
 				return out
+			end)
+			sending[name] = nil
+			if not ok then
+				error(res)
 			end
-			-- Denial: surface the authorization reason verbatim as a tool error.
-			error(
-				("term_send denied (%s)%s"):format(res.reason or "unknown", res.detail and (": " .. tostring(res.detail)) or "")
-			)
+			return res
 		end,
 	})
 end
