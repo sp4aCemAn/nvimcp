@@ -97,6 +97,24 @@ Claude Code:
 claude mcp add nvimcp -- python3 /home/you/.local/share/nvim/lazy/nvimcp/proxy/nvimcp-proxy.py
 ```
 
+GitHub Copilot CLI (`~/.copilot/mcp-config.json`):
+
+```json
+{
+	"mcpServers": {
+		"nvimcp": {
+			"type": "local",
+			"command": "python3",
+			"args": ["/Users/you/.local/share/nvim/lazy/nvimcp/proxy/nvimcp-proxy.py"],
+			"tools": ["*"]
+		}
+	}
+}
+```
+
+Any MCP client that spawns a local stdio server works the same way; the proxy
+is agent-agnostic.
+
 Claude Desktop (`claude_desktop_config.json`) and Cursor (`~/.cursor/mcp.json`):
 
 ```json
@@ -125,11 +143,13 @@ require("nvimcp").setup({})
 	start_if = nil,              -- function():boolean to suppress autostart
 	socket_dir = nil,            -- default: $XDG_RUNTIME_DIR-equivalent (stdpath("run"))/nvimcp
 	write_sessions = true,       -- maintain sessions.json for client discovery
+	fallback_recent = false,     -- agents opened anywhere may reach THIS session when no
+	                             -- cwd/ancestor/terminal-ancestry match exists (see Discovery)
 	rate_limit = { calls = 10, window = 5 }, -- tool calls per window (seconds); nil disables
 	max_output_lines = 500,      -- cap on lines returned per tool call
 	allow_edit = true,           -- register buffer_edit; false = tool not registered (read-only server)
 	disable = {},                -- tool names to unregister, e.g. { "buffer_edit" }
-	terminals = {                -- reserved for phase 3
+	terminals = {                -- phase 3; opt-in — policy lives in nvimterminals
 		enabled = false,
 		approve = true,
 	},
@@ -166,19 +186,33 @@ LSP:
   steer the AI's queries)
 
 Terminals (opt-in, requires the
-[nvimterminals](https://github.com/sp4aCemAn/nvimterminals) plugin):
+[nvimterminals](https://github.com/sp4aCemAn/nvimterminals) plugin with its
+agent-control API):
 
 - `term_list` — named terminals (name, running/dead, pid, exit code, agent
-  permission, line count); dead terminals keep their scrollback
-- `term_read` — last n lines of a terminal's scrollback (scrubbed + capped like
-  `buffer_read`); read-only, always available
+  permission, line count); `include_dead: true` adds exited terminals, which
+  keep their scrollback
+- `term_read` — read a terminal's scrollback: last n lines by default, or a
+  `[start_line, start_line+n)` window with `start_line` (scrubbed + capped
+  like `buffer_read`); read-only, always available, works on running and
+  exited terminals
 - `term_send` — send a line of input to a terminal; **authorization lives
   entirely in nvimterminals**: the terminal needs agent control enabled
   (`:TermAgent`) and its command policy (`:TermPolicy`) must allow the line
   (deny rules win, `*` allows all, empty policy denies everything). Denials
-  come back as tool errors carrying the reason string verbatim. The tools only
-  register when `terminals.enabled = true` and nvimterminals is loaded;
-  `term_send` additionally requires nvimterminals with the agent-control API.
+  come back as tool errors carrying the reason string verbatim.
+  - `wait_ms` (default 250) makes the send settle before returning: the
+    proxy yields into nvim's event loop until the terminal buffer commits
+    output anywhere (fresh shells paint at the top of the screen, so a
+    tail-only check would miss it), then a small tail
+  - `read_lines` (default 25) includes the output in the result itself:
+    `settled` (did output arrive inside the window), `lines` (scrubbed),
+    `line_range` where it landed, and `read_from` (`end` or `start`); a
+    long-running command returns `settled: false` — re-read later with
+    `term_read`; `read_lines: 0` skips the read entirely
+- the three tools register when `terminals.enabled = true` and nvimterminals
+  is loaded; `term_send` additionally requires the agent-control API,
+  `term_read`/`term_list` work with older builds too
 
 ## Security
 
@@ -197,8 +231,26 @@ Terminals (opt-in, requires the
   live session only affects new registrations (a running server that already
   registered `buffer_edit` still refuses calls while `allow_edit=false`).
 - ✱Terminal tools (phase 3) are read-only by default; `term_send` is authorized
-  exclusively by nvimterminals (per-terminal agent toggle + command policy,
-  denials never run the command). nvimcp never overrides that policy.
+  exclusively by nvimterminals (global `agent.enabled` + per-terminal agent
+  toggle + command policy, deny-first; denials never run the command).
+  nvimcp never overrides that policy. Terminal output returned by any tool is
+  scrubbed through the same pipeline as buffer output.
+
+## Agent workflows (interactive programs)
+
+Agent shells are pty-less, so interactive programs (`ssh`, `scp`, `sudo`,
+installers) hang or fail there — that's what the terminal tools are for:
+
+- arm a terminal once per session: `:TermAgent deploy`, then `:TermPolicy
+  deploy` with patterns (`^scp`, `^ssh ...`); deny-first, so add explicit
+  `deny <pattern>` lines for anything the agent should never send
+- send/observe runs through `term_send` (output inline via the settle window)
+  and `term_read` — **credentials you type into a password prompt never land
+  in the terminal buffer** (echo off), but the agent can feed any command the
+  policy allows; do not pattern-allow whatever the agent should not type
+- for passwordless agent-only flows (e.g. ssh/scp to a VM), bootstrap a key
+  once — via the machine's `ssh-copy-id`, or by hand through a controlled
+  terminal — then plain shell commands work without the terminal tools
 
 ## Running the tests
 
