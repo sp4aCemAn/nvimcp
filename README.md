@@ -45,8 +45,8 @@ By default the server starts automatically (`autostart = true`).
 
 ## Connecting MCP clients (phase 2)
 
-	MCP client <— stdio (line-delimited JSON-RPC) —> nvimcp-proxy
-	          <— unix socket (msgpack-RPC) —> live nvim —> nvimcp tools
+    MCP client <— stdio (line-delimited JSON-RPC) —> nvimcp-proxy
+              <— unix socket (msgpack-RPC) —> live nvim —> nvimcp tools
 
 `proxy/nvimcp-proxy.py` (Python stdlib only) finds your nvim session
 automatically: `--socket` wins; else `--pid` picks from the sessions file; else
@@ -81,13 +81,16 @@ opencode — `opencode.json`:
 
 ```json
 {
-	"mcp": {
-		"nvimcp": {
-			"type": "local",
-			"command": ["python3", "/home/you/.local/share/nvim/lazy/nvimcp/proxy/nvimcp-proxy.py"],
-			"enabled": true
-		}
-	}
+  "mcp": {
+    "nvimcp": {
+      "type": "local",
+      "command": [
+        "python3",
+        "/home/you/.local/share/nvim/lazy/nvimcp/proxy/nvimcp-proxy.py"
+      ],
+      "enabled": true
+    }
+  }
 }
 ```
 
@@ -101,14 +104,16 @@ GitHub Copilot CLI (`~/.copilot/mcp-config.json`):
 
 ```json
 {
-	"mcpServers": {
-		"nvimcp": {
-			"type": "local",
-			"command": "python3",
-			"args": ["/Users/you/.local/share/nvim/lazy/nvimcp/proxy/nvimcp-proxy.py"],
-			"tools": ["*"]
-		}
-	}
+  "mcpServers": {
+    "nvimcp": {
+      "type": "local",
+      "command": "python3",
+      "args": [
+        "/Users/you/.local/share/nvim/lazy/nvimcp/proxy/nvimcp-proxy.py"
+      ],
+      "tools": ["*"]
+    }
+  }
 }
 ```
 
@@ -119,12 +124,12 @@ Claude Desktop (`claude_desktop_config.json`) and Cursor (`~/.cursor/mcp.json`):
 
 ```json
 {
-	"mcpServers": {
-		"nvimcp": {
-			"command": "python3",
-			"args": ["/home/you/.local/share/nvim/lazy/nvimcp/proxy/nvimcp-proxy.py"]
-		}
-	}
+  "mcpServers": {
+    "nvimcp": {
+      "command": "python3",
+      "args": ["/home/you/.local/share/nvim/lazy/nvimcp/proxy/nvimcp-proxy.py"]
+    }
+  }
 }
 ```
 
@@ -241,8 +246,9 @@ agent-control API):
 Agent shells are pty-less, so interactive programs (`ssh`, `scp`, `sudo`,
 installers) hang or fail there — that's what the terminal tools are for:
 
-- arm a terminal once per session: `:TermAgent deploy`, then `:TermPolicy
-  deploy` with patterns (`^scp`, `^ssh ...`); deny-first, so add explicit
+- first create a terminal `TermToggle deploy`
+- arm the terminal once per session: `:TermAgent deploy`, then `:TermPolicy
+deploy` with patterns (`^scp`, `^ssh ...`); deny-first, so add explicit
   `deny <pattern>` lines for anything the agent should never send
 - send/observe runs through `term_send` (output inline via the settle window)
   and `term_read` — **credentials you type into a password prompt never land
