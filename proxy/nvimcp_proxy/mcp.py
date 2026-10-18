@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import json
 import os
 import sys
+from typing import Any, Callable, Dict, List
 
 from . import (
     DEFAULT_PROTOCOL_VERSION,
@@ -9,20 +12,28 @@ from . import (
     SERVER_VERSION,
 )
 
+RequestMeta = Dict[str, Any]
+
 
 class StdioEndpoint:
     """MCP/JSON-RPC side of the bridge: stdin line framing, method routing,
     stdout responses. Orchestration (parking, connecting, nvim calls) stays
     in the app; the endpoint hands off via callbacks."""
 
-    def __init__(self, on_needs_nvim, on_eof, on_write_error, log):
+    def __init__(
+        self,
+        on_needs_nvim: Callable[[Any, str, Dict[str, Any]], None],
+        on_eof: Callable[[], None],
+        on_write_error: Callable[[], None],
+        log: Callable[[str], None],
+    ) -> None:
         self.rx = bytearray()
         self.on_needs_nvim = on_needs_nvim
         self.on_eof = on_eof
         self.on_write_error = on_write_error
         self.log = log
 
-    def poll(self):
+    def poll(self) -> None:
         try:
             chunk = os.read(0, 65536)
         except OSError:
@@ -40,7 +51,7 @@ class StdioEndpoint:
             del self.rx[: i + 1]
             self._on_line(line)
 
-    def _on_line(self, line):
+    def _on_line(self, line: bytes) -> None:
         text = line.strip()
         if not text:
             return
@@ -52,7 +63,7 @@ class StdioEndpoint:
         if isinstance(msg, dict) and isinstance(msg.get("method"), str):
             self._on_msg(msg)
 
-    def _on_msg(self, msg):
+    def _on_msg(self, msg: Dict[str, Any]) -> None:
         mcp_id = msg.get("id")
         if mcp_id is None:
             self.on_notification(msg.get("method"))
@@ -93,10 +104,10 @@ class StdioEndpoint:
         else:
             self.send_error(mcp_id, -32601, "method not found: %s" % method)
 
-    def on_notification(self, method):
+    def on_notification(self, method: Any) -> None:
         pass
 
-    def result_from_nvimcp(self, meta, result):
+    def result_from_nvimcp(self, meta: RequestMeta, result: Any) -> None:
         what = meta["what"]
         if not isinstance(result, dict):
             self.send_error(meta["mcp_id"], -32603, "nvimcp returned an unexpected response for %s" % what)
@@ -118,13 +129,13 @@ class StdioEndpoint:
                 "content": [{"type": "text", "text": json.dumps(result.get("result"), **JSON_DUMP_KW)}]
             })
 
-    def send_result(self, mcp_id, result):
+    def send_result(self, mcp_id: Any, result: Any) -> None:
         self._send({"jsonrpc": "2.0", "id": mcp_id, "result": result})
 
-    def send_error(self, mcp_id, code, message):
+    def send_error(self, mcp_id: Any, code: int, message: str) -> None:
         self._send({"jsonrpc": "2.0", "id": mcp_id, "error": {"code": code, "message": message}})
 
-    def _send(self, msg):
+    def _send(self, msg: Dict[str, Any]) -> None:
         try:
             sys.stdout.buffer.write((json.dumps(msg, **JSON_DUMP_KW) + "\n").encode("utf-8"))
             sys.stdout.buffer.flush()

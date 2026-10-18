@@ -1,17 +1,22 @@
+from __future__ import annotations
+
 import struct
+from typing import Any, Union
+
+Buffer = Union[bytes, bytearray]
 
 
 class Incomplete(Exception):
     pass
 
 
-def mp_encode(value):
+def mp_encode(value: Any) -> bytes:
     out = bytearray()
     _enc(value, out)
     return bytes(out)
 
 
-def _enc(v, out):
+def _enc(v: Any, out: bytearray) -> None:
     if v is None:
         out.append(0xC0)
     elif v is True:
@@ -33,7 +38,7 @@ def _enc(v, out):
         raise TypeError("cannot encode %s" % type(v).__name__)
 
 
-def _enc_int(v, out):
+def _enc_int(v: int, out: bytearray) -> None:
     if v >= 0:
         if v < 0x80:
             out.append(v)
@@ -65,7 +70,7 @@ def _enc_int(v, out):
         out += struct.pack(">q", v)
 
 
-def _enc_str(v, out):
+def _enc_str(v: str, out: bytearray) -> None:
     b = v.encode("utf-8")
     n = len(b)
     if n < 32:
@@ -82,7 +87,7 @@ def _enc_str(v, out):
     out += b
 
 
-def _enc_array(v, out):
+def _enc_array(v: list[Any], out: bytearray) -> None:
     n = len(v)
     if n < 0x10:
         out.append(0x90 | n)
@@ -96,7 +101,7 @@ def _enc_array(v, out):
         _enc(item, out)
 
 
-def _enc_dict(v, out):
+def _enc_dict(v: dict[str, Any], out: bytearray) -> None:
     keys = list(v.keys())
     n = len(keys)
     if n < 0x10:
@@ -115,30 +120,30 @@ def _enc_dict(v, out):
 class _Cur:
     __slots__ = ("buf", "off")
 
-    def __init__(self, buf, off=0):
-        self.buf = buf
-        self.off = off
+    def __init__(self, buf: Buffer, off: int = 0) -> None:
+        self.buf: Buffer = buf
+        self.off: int = off
 
 
-def mp_decode_one(buf, off=0):
+def mp_decode_one(buf: Buffer, off: int = 0) -> tuple[Any, int]:
     cur = _Cur(buf, off)
     value = _dec(cur)
     return value, cur.off
 
 
-def _need(cur, n):
+def _need(cur: _Cur, n: int) -> None:
     if cur.off + n > len(cur.buf):
         raise Incomplete()
 
 
-def _be_int(cur, n):
+def _be_int(cur: _Cur, n: int) -> int:
     _need(cur, n)
     v = int.from_bytes(cur.buf[cur.off: cur.off + n], "big")
     cur.off += n
     return v
 
 
-def _dec(cur):
+def _dec(cur: _Cur) -> Any:
     _need(cur, 1)
     b = cur.buf[cur.off]
     cur.off += 1
@@ -227,21 +232,21 @@ def _dec(cur):
     raise ValueError("bad msgpack byte 0x%02x" % b)
 
 
-def _dec_str(cur, n):
+def _dec_str(cur: _Cur, n: int) -> str:
     _need(cur, n)
     v = bytes(cur.buf[cur.off: cur.off + n]).decode("utf-8", "replace")
     cur.off += n
     return v
 
 
-def _dec_bin(cur, n):
+def _dec_bin(cur: _Cur, n: int) -> bytes:
     _need(cur, n)
     v = bytes(cur.buf[cur.off: cur.off + n])
     cur.off += n
     return v
 
 
-def _dec_ext(cur, n):
+def _dec_ext(cur: _Cur, n: int) -> dict[str, Any]:
     _need(cur, n + 1)
     t = cur.buf[cur.off]
     data = bytes(cur.buf[cur.off + 1: cur.off + 1 + n])
@@ -249,12 +254,12 @@ def _dec_ext(cur, n):
     return {"__nvimcp_ext": t, "data": data.hex()}
 
 
-def _dec_array(cur, n):
+def _dec_array(cur: _Cur, n: int) -> list[Any]:
     return [_dec(cur) for _ in range(n)]
 
 
-def _dec_dict(cur, n):
-    d = {}
+def _dec_dict(cur: _Cur, n: int) -> dict[Any, Any]:
+    d: dict[Any, Any] = {}
     for _ in range(n):
         k = _dec(cur)
         d[k if isinstance(k, (str, int)) else str(k)] = _dec(cur)

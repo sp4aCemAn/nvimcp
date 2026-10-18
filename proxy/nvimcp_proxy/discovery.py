@@ -1,11 +1,16 @@
+from __future__ import annotations
+
 import glob
 import json
 import os
 import subprocess
 import sys
 import tempfile
+from typing import Any, Callable, Dict, List, Optional
 
 from .errors import ProxyError
+
+SessionEntry = Dict[str, Any]
 
 
 class SessionFinder:
@@ -14,16 +19,24 @@ class SessionFinder:
     Attributes keep the proxy's arg names so the moved method bodies work
     unchanged. log/warn are the proxy's debug/warning sinks."""
 
-    def __init__(self, socket_arg, pid_arg, sessions_file_arg, skip_ancestry, log, warn):
+    def __init__(
+        self,
+        socket_arg: Optional[str],
+        pid_arg: Optional[int],
+        sessions_file_arg: Optional[str],
+        skip_ancestry: bool,
+        log: Callable[[str], None],
+        warn: Callable[[str], None],
+    ) -> None:
         self.socket_arg = socket_arg
         self.pid_arg = pid_arg
         self.sessions_file_arg = sessions_file_arg
         self.skip_ancestry = skip_ancestry
         self._log = log
         self._warn = warn
-        self._ancestors = None
+        self._ancestors: Optional[List[int]] = None
 
-    def _ancestor_pids(self):
+    def _ancestor_pids(self) -> List[int]:
         """Ancestor chain, computed once and cached.
 
         Discovery re-runs on every retry while parked; re-walking with ps(1)
@@ -36,7 +49,7 @@ class SessionFinder:
             self._ancestors = self._ancestor_pid_chain()
         return self._ancestors
 
-    def _ancestor_pid_chain(self):
+    def _ancestor_pid_chain(self) -> List[int]:
         """Nearest-first pids of this process's ancestors.
 
         An agent (and therefore this proxy) launched inside an nvim terminal
@@ -44,7 +57,7 @@ class SessionFinder:
         session pid in this chain is an exact owner match — even when the
         agent's shell cd'ed elsewhere. ps(1) keeps this portable on both
         Linux and macOS (no /proc needed)."""
-        chain = []
+        chain: List[int] = []
         pid = os.getpid()
         for _ in range(32):
             try:
@@ -61,18 +74,18 @@ class SessionFinder:
             pid = ppid
         return chain
 
-    def _session_candidates(self, base):
+    def _session_candidates(self, base: str) -> List[str]:
         """Registry files under one runtime base: legacy sessions.json plus the
         per-pid shards in base/sessions/. Both hold the same {pid: entry} shape,
         so the discovery loop parses them interchangeably."""
-        paths = []
+        paths: List[str] = []
         legacy = os.path.join(base, "sessions.json")
         if os.path.isfile(legacy):
             paths.append(legacy)
         paths += sorted(glob.glob(os.path.join(base, "sessions", "*.json")))
         return paths
 
-    def _sessions_files(self):
+    def _sessions_files(self) -> List[str]:
         if self.sessions_file_arg:
             if os.path.isdir(self.sessions_file_arg):
                 cands = self._session_candidates(self.sessions_file_arg)
@@ -87,7 +100,7 @@ class SessionFinder:
             # running session by globbing (the dir may be named after the
             # username or the uid).
             tmp = tempfile.gettempdir()
-            paths = []
+            paths: List[str] = []
             for b in sorted(glob.glob(os.path.join(tmp, "nvim.*"))):
                 for d in sorted(glob.glob(os.path.join(b, "*", "nvimcp"))):
                     for p in self._session_candidates(d):
@@ -96,10 +109,10 @@ class SessionFinder:
             return paths
         return self._session_candidates("/run/user/%d/nvimcp" % os.getuid())
 
-    def _describe(self, entries):
+    def _describe(self, entries: List[SessionEntry]) -> str:
         return ", ".join("pid %s (%s)" % (e.get("pid"), e.get("cwd", "?")) for e in entries)
 
-    def _session_alive(self, entry):
+    def _session_alive(self, entry: SessionEntry) -> bool:
         pid = entry.get("pid")
         if not isinstance(pid, int) or pid <= 0:
             return True
@@ -111,7 +124,7 @@ class SessionFinder:
             return True
         return True
 
-    def _related(self, session_cwd, cli_cwd):
+    def _related(self, session_cwd: Optional[str], cli_cwd: Optional[str]) -> bool:
         if not session_cwd or not cli_cwd:
             return False
         s = os.path.realpath(session_cwd)
@@ -121,7 +134,7 @@ class SessionFinder:
         common = os.path.commonpath([s, c])
         return common == s or common == c
 
-    def _rank(self, entry, cli_cwd):
+    def _rank(self, entry: SessionEntry, cli_cwd: str) -> int:
         s = entry.get("cwd")
         if not s:
             return 99
@@ -133,12 +146,12 @@ class SessionFinder:
         if common not in (s, c):
             return 99
 
-        def depth(p):
+        def depth(p: str) -> int:
             return len([x for x in os.path.relpath(p, common).split(os.sep) if x not in (".", "")])
 
         return depth(s) + depth(c)
 
-    def discover(self):
+    def discover(self) -> SessionEntry:
         if self.socket_arg:
             return {"socket": self.socket_arg, "pid": None}
         paths = self._sessions_files()
@@ -154,8 +167,8 @@ class SessionFinder:
                 "(this is the Linux default path; on macOS pass --sessions-file, --pid "
                 "or --socket)" % os.getuid()
             )
-        entries = []
-        seen_sockets = set()
+        entries: List[SessionEntry] = []
+        seen_sockets: set[str] = set()
         for path in paths:
             try:
                 with open(path, encoding="utf-8") as f:

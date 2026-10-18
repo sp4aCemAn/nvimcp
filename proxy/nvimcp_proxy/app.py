@@ -1,22 +1,27 @@
+from __future__ import annotations
+
 import argparse
 import selectors
 import signal
 import sys
 import time
+from typing import Any, Dict, List, NoReturn, Optional, Tuple
 
 from .bridge import NvimBridge
 from .discovery import SessionFinder
 from .errors import ProxyError
 from .mcp import StdioEndpoint
 
-DEFAULT_TIMEOUT = 30.0
-DEFAULT_WAIT = 10.0
-SELECT_TICK = 0.5
-CONNECT_RETRY = 0.5
+DEFAULT_TIMEOUT: float = 30.0
+DEFAULT_WAIT: float = 10.0
+SELECT_TICK: float = 0.5
+CONNECT_RETRY: float = 0.5
+
+ParkedRequest = Tuple[Any, str, Dict[str, Any]]
 
 
 class NvimcpProxy:
-    def __init__(self, args):
+    def __init__(self, args: argparse.Namespace) -> None:
         self.finder = SessionFinder(
             args.socket, args.pid, args.sessions_file,
             getattr(args, "skip_ancestry", False), self._log, self._warn,
@@ -30,19 +35,20 @@ class NvimcpProxy:
             self.mcp.send_error, self.mcp.result_from_nvimcp,
             self._nvim_died, self._nvim_ready,
         )
-        self.parked = []
-        self.connect_started = None
-        self.next_connect_retry = 0.0
-        self.last_connect_err = None
-        self.exit_code = None
-    def _log(self, msg):
+        self.parked: List[ParkedRequest] = []
+        self.connect_started: Optional[float] = None
+        self.next_connect_retry: float = 0.0
+        self.last_connect_err: Optional[str] = None
+        self.exit_code: Optional[int] = None
+
+    def _log(self, msg: str) -> None:
         if self.debug:
             print("[nvimcp-proxy] %s" % msg, file=sys.stderr)
 
-    def _warn(self, msg):
+    def _warn(self, msg: str) -> None:
         print("[nvimcp-proxy] %s" % msg, file=sys.stderr)
 
-    def run(self):
+    def run(self) -> int:
         self.sel.register(0, selectors.EVENT_READ, "stdin")
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, lambda *_: self._shutdown(0))
@@ -62,27 +68,27 @@ class NvimcpProxy:
             self.sel.close()
         return self.exit_code if self.exit_code is not None else 0
 
-    def _shutdown(self, code):
+    def _shutdown(self, code: int) -> None:
         self.exit_code = code
 
-    def _on_stdin_eof(self):
+    def _on_stdin_eof(self) -> None:
         self._flush_parked_on_eof()
         self._shutdown(0)
 
-    def _stdout_dead(self):
+    def _stdout_dead(self) -> None:
         self._shutdown(1)
 
-    def _nvim_died(self, reason):
+    def _nvim_died(self, reason: str) -> None:
         for mcp_id, _what, _params in self.parked:
             self.mcp.send_error(mcp_id, -32603, reason)
         self.parked = []
 
-    def _nvim_ready(self):
+    def _nvim_ready(self) -> None:
         parked, self.parked = self.parked, []
         for mcp_id, what, params in parked:
             self.bridge.send_tool(mcp_id, what, params)
 
-    def _flush_parked_on_eof(self):
+    def _flush_parked_on_eof(self) -> None:
         """stdin closed while waiting for a session: one last discovery try
         via the normal pump, then report and go."""
         self._pump_connect()
@@ -92,7 +98,7 @@ class NvimcpProxy:
                 self.mcp.send_error(mcp_id, -32603, err)
             self.parked = []
 
-    def _select_timeout(self):
+    def _select_timeout(self) -> float:
         timeout = SELECT_TICK
         if self.parked and self.bridge.sock is None and self.connect_started is not None:
             now = time.monotonic()
@@ -103,7 +109,8 @@ class NvimcpProxy:
         now = time.monotonic()
         nearest = min(m["deadline"] for m in self.bridge.pending.values())
         return max(0.0, min(nearest - now, timeout))
-    def _needs_nvim(self, mcp_id, what, params):
+
+    def _needs_nvim(self, mcp_id: Any, what: str, params: Dict[str, Any]) -> None:
         try:
             if not self.bridge.connected:
                 self._connect()
@@ -121,11 +128,11 @@ class NvimcpProxy:
             else:
                 self.mcp.send_error(mcp_id, -32603, str(e))
 
-    def _park(self, mcp_id, what, params):
+    def _park(self, mcp_id: Any, what: str, params: Dict[str, Any]) -> None:
         if not any(pe[0] == mcp_id for pe in self.parked):
             self.parked.append((mcp_id, what, params))
 
-    def _pump_connect(self):
+    def _pump_connect(self) -> None:
         """Retry discovery while parked requests are older than the wait
         window; report errors to their clients when the window expires."""
         if self.bridge.sock is not None or not self.parked:
@@ -145,10 +152,13 @@ class NvimcpProxy:
                 self._connect()
             except ProxyError as e:
                 self.last_connect_err = str(e)
-    def _connect(self):
+
+    def _connect(self) -> None:
         target = self.finder.discover()
         self.bridge.connect(target)
-def main():
+
+
+def main() -> NoReturn:
     p = argparse.ArgumentParser(
         prog="nvimcp-proxy",
         description="Bridge an MCP client on stdio to a live Neovim session running nvimcp.",
