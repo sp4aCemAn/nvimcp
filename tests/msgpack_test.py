@@ -8,7 +8,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "proxy"))
 
 from nvimcp_proxy.mp import Incomplete, mp_decode_one, mp_encode
-from nvimcp_proxy.legacy import RPC_REQUEST
+from nvimcp_proxy.bridge import RPC_REQUEST
 
 n_fail = 0
 
