@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 
-import importlib.util
 import os
 import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PROXY_PATH = os.path.join(HERE, "..", "proxy", "nvimcp-proxy.py")
+sys.path.insert(0, os.path.join(HERE, "..", "proxy"))
 
-spec = importlib.util.spec_from_file_location("nvimcp_proxy", PROXY_PATH)
-proxy = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(proxy)
+from nvimcp_proxy.mp import Incomplete, mp_decode_one, mp_encode
+from nvimcp_proxy.legacy import RPC_REQUEST
 
 n_fail = 0
 
@@ -23,15 +21,15 @@ def ok(name, cond, detail=""):
 
 
 def roundtrip(name, v, expected_bytes=None):
-	buf = proxy.mp_encode(v)
+	buf = mp_encode(v)
 	if expected_bytes is not None:
 		ok(name + " bytes", buf == expected_bytes, buf.hex())
-	value, off = proxy.mp_decode_one(buf)
+	value, off = mp_decode_one(buf)
 	ok(name + " roundtrip", value == v and off == len(buf), repr(value))
 	return buf
 
 
-ok("bool is not int", proxy.mp_encode(True) == b"\xc3" and proxy.mp_encode(False) == b"\xc2")
+ok("bool is not int", mp_encode(True) == b"\xc3" and mp_encode(False) == b"\xc2")
 roundtrip("nil", None, b"\xc0")
 roundtrip("true", True, b"\xc3")
 roundtrip("false", False, b"\xc2")
@@ -59,17 +57,17 @@ roundtrip("fixmap", {"a": 1}, b"\x81\xa1a\x01")
 roundtrip("map16", {("k%03d" % i): i for i in range(20)})
 roundtrip("nested", [1, "two", None, [3, {"four": False, "five": [0.25, -7]}]])
 
-value, _ = proxy.mp_decode_one(b"\xd0\xfb")
+value, _ = mp_decode_one(b"\xd0\xfb")
 ok("decode int8 -5", value == -5, value)
-value, _ = proxy.mp_decode_one(b"\xcd\x01\x00")
+value, _ = mp_decode_one(b"\xcd\x01\x00")
 ok("decode uint16 256", value == 256, value)
-value, _ = proxy.mp_decode_one(b"\xcb" + struct.pack(">d", 2.5))
+value, _ = mp_decode_one(b"\xcb" + struct.pack(">d", 2.5))
 ok("decode float64 2.5", value == 2.5, value)
-value, _ = proxy.mp_decode_one(b"\xa2AB")
+value, _ = mp_decode_one(b"\xa2AB")
 ok("decode fixstr", value == "AB", value)
 
 rpc_msg = [
-	proxy.RPC_REQUEST,
+	RPC_REQUEST,
 	42,
 	"nvim_exec_lua",
 	[
@@ -77,22 +75,22 @@ rpc_msg = [
 		["call_tool", {"name": "buffer_read", "arguments": {"start_line": 1, "end_line": 4}}],
 	],
 ]
-buf = proxy.mp_encode(rpc_msg)
-value, off = proxy.mp_decode_one(buf)
+buf = mp_encode(rpc_msg)
+value, off = mp_decode_one(buf)
 ok("rpc message roundtrip", value == rpc_msg and off == len(buf), repr(value))
 
 try:
-	proxy.mp_decode_one(buf[:-1])
+	mp_decode_one(buf[:-1])
 	ok("truncated raises Incomplete", False, "no exception")
-except proxy.Incomplete:
+except Incomplete:
 	ok("truncated raises Incomplete", True)
 except Exception as e:
 	ok("truncated raises Incomplete", False, repr(e))
 
-two = proxy.mp_encode([1, 2]) + proxy.mp_encode("x") + proxy.mp_encode({"y": 3})
-v1, off1 = proxy.mp_decode_one(two)
-v2, off2 = proxy.mp_decode_one(two, off1)
-v3, off3 = proxy.mp_decode_one(two, off2)
+two = mp_encode([1, 2]) + mp_encode("x") + mp_encode({"y": 3})
+v1, off1 = mp_decode_one(two)
+v2, off2 = mp_decode_one(two, off1)
+v3, off3 = mp_decode_one(two, off2)
 ok("concatenated messages decode in sequence", v1 == [1, 2] and v2 == "x" and v3 == {"y": 3} and off3 == len(two))
 
 if n_fail > 0:

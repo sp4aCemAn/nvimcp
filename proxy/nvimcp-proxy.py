@@ -10,15 +10,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
+from nvimcp_proxy.errors import ProxyError
+from nvimcp_proxy.mp import Incomplete, mp_decode_one, mp_encode
 from nvimcp_proxy.legacy import (
     NvimcpProxy,
-    ProxyError,
-    Incomplete,
     RPC_REQUEST,
     RPC_RESPONSE,
     RPC_NOTIFICATION,
-    mp_encode,
-    mp_decode_one,
     main,
 )
 

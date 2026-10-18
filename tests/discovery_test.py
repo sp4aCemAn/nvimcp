@@ -3,7 +3,6 @@
 # Unit tests for proxy session discovery helpers (_session_alive, _related,
 # _rank, _sessions_files) — platform independent, no nvim required.
 
-import importlib.util
 import os
 import subprocess
 import sys
@@ -11,11 +10,9 @@ import tempfile
 import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PROXY_PATH = os.path.join(HERE, "..", "proxy", "nvimcp-proxy.py")
+sys.path.insert(0, os.path.join(HERE, "..", "proxy"))
 
-spec = importlib.util.spec_from_file_location("nvimcp_proxy", PROXY_PATH)
-proxy = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(proxy)
+from nvimcp_proxy.legacy import NvimcpProxy
 
 n_fail = 0
 
@@ -29,7 +26,7 @@ def ok(name, cond, detail=""):
 
 def make_proxy():
 	args = types.SimpleNamespace(socket=None, pid=None, sessions_file=None, timeout=30.0, wait=10.0, debug=False)
-	return proxy.NvimcpProxy(args)
+	return NvimcpProxy(args)
 
 
 def main():
