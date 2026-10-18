@@ -11,6 +11,9 @@ fi
 
 python3 tests/msgpack_test.py || fail=1
 python3 tests/discovery_test.py || fail=1
+# characterization suite: pins current state-machine behavior, including
+# KNOWN-ISSUE cases (they PASS today; their fix flips the assertions)
+python3 tests/statemachine_test.py || fail=1
 
 NVIM=$(command -v nvim)
 NVIMTERMINALS_PATH="${NVIMTERMINALS_PATH:-$HOME/vsc/nvimterminals}" "$NVIM" --headless -l tests/boot.lua &
