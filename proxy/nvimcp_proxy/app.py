@@ -1,23 +1,19 @@
-#!/usr/bin/env python3
 import argparse
 import selectors
 import signal
 import sys
 import time
 
+from .bridge import NvimBridge
+from .discovery import SessionFinder
+from .errors import ProxyError
+from .mcp import StdioEndpoint
+
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_WAIT = 10.0
 SELECT_TICK = 0.5
 CONNECT_RETRY = 0.5
 
-
-
-
-
-from .discovery import SessionFinder
-from .errors import ProxyError
-from .mcp import StdioEndpoint
-from .bridge import NvimBridge
 
 class NvimcpProxy:
     def __init__(self, args):
