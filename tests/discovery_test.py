@@ -7,12 +7,11 @@ import os
 import subprocess
 import sys
 import tempfile
-import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "proxy"))
 
-from nvimcp_proxy.legacy import NvimcpProxy
+from nvimcp_proxy.discovery import SessionFinder
 
 n_fail = 0
 
@@ -24,13 +23,12 @@ def ok(name, cond, detail=""):
 		n_fail += 1
 
 
-def make_proxy():
-	args = types.SimpleNamespace(socket=None, pid=None, sessions_file=None, timeout=30.0, wait=10.0, debug=False)
-	return NvimcpProxy(args)
+def make_finder():
+	return SessionFinder(None, None, None, False, lambda m: None, lambda m: None)
 
 
 def main():
-	p = make_proxy()
+	p = make_finder()
 
 	ok("alive: own pid", p._session_alive({"pid": os.getpid()}) is True)
 	dead = subprocess.Popen(["true"])
@@ -85,7 +83,7 @@ def main():
 		def counting_walk():
 			calls[0] += 1
 			return chain
-		p2 = make_proxy()
+		p2 = make_finder()
 		p2._ancestor_pid_chain = counting_walk
 		a1 = p2._ancestor_pids()
 		a2 = p2._ancestor_pids()
