@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import os
 import selectors
 import signal
 import socket
 import sys
 import time
 
-SERVER_NAME = "nvimcp"
-SERVER_VERSION = "0.2.0"
-DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_WAIT = 10.0
 SELECT_TICK = 0.5
@@ -23,12 +19,13 @@ RPC_NOTIFICATION = 2
 NVIMCP_RPC_LUA = "return require('nvimcp.server').rpc(...)"
 HEALTH_LUA = "return require('nvimcp.server').socket_path() ~= nil"
 
-JSON_DUMP_KW = {"ensure_ascii": False, "separators": (",", ":")}
 
 
+from . import JSON_DUMP_KW
 from .errors import ProxyError
 from .mp import Incomplete, mp_decode_one, mp_encode
 from .discovery import SessionFinder
+from .mcp import StdioEndpoint
 
 class NvimcpProxy:
     def __init__(self, args):
@@ -43,7 +40,7 @@ class NvimcpProxy:
         self.sock = None
         self.connected = False
         self.nvim_rx = bytearray()
-        self.stdin_rx = bytearray()
+        self.mcp = StdioEndpoint(self._needs_nvim, self._on_stdin_eof, self._stdout_dead, self._log)
         self.pending = {}
         self.parked = []
         self.connect_started = None
@@ -67,7 +64,7 @@ class NvimcpProxy:
                 events = self.sel.select(self._select_timeout())
                 for key, _mask in events:
                     if key.data == "stdin":
-                        self._on_stdin()
+                        self.mcp.poll()
                     elif key.data == "nvim":
                         self._on_nvim_data()
                 if self.exit_code is None:
@@ -81,6 +78,13 @@ class NvimcpProxy:
     def _shutdown(self, code):
         self.exit_code = code
 
+    def _on_stdin_eof(self):
+        self._flush_parked_on_eof()
+        self._shutdown(0)
+
+    def _stdout_dead(self):
+        self._shutdown(1)
+
     def _flush_parked_on_eof(self):
         """stdin closed while waiting for a session: one last discovery try
         via the normal pump, then report and go."""
@@ -88,7 +92,7 @@ class NvimcpProxy:
         if self.parked and self.sock is None:
             err = self.last_connect_err or "no nvimcp session found"
             for mcp_id, _what, _params in self.parked:
-                self._send_mcp_error(mcp_id, -32603, err)
+                self.mcp.send_error(mcp_id, -32603, err)
             self.parked = []
 
     def _select_timeout(self):
@@ -113,83 +117,9 @@ class NvimcpProxy:
                 self._nvim_died("nvim health check timed out")
                 return
             del self.pending[msgid]
-            self._send_mcp_error(
+            self.mcp.send_error(
                 meta["mcp_id"], -32603, "nvim rpc timed out after %.0fs (%s)" % (self.timeout, meta["what"])
             )
-
-    def _on_stdin(self):
-        try:
-            chunk = os.read(0, 65536)
-        except OSError:
-            self._flush_parked_on_eof()
-            self._shutdown(0)
-            return
-        if not chunk:
-            self._flush_parked_on_eof()
-            self._shutdown(0)
-            return
-        self.stdin_rx += chunk
-        while True:
-            i = self.stdin_rx.find(b"\n")
-            if i < 0:
-                break
-            line = bytes(self.stdin_rx[:i])
-            del self.stdin_rx[: i + 1]
-            self._on_mcp_line(line)
-
-    def _on_mcp_line(self, line):
-        text = line.strip()
-        if not text:
-            return
-        try:
-            msg = json.loads(text)
-        except ValueError as e:
-            self._send_mcp_error(None, -32700, "parse error: %s" % e)
-            return
-        if isinstance(msg, dict) and isinstance(msg.get("method"), str):
-            self._on_mcp_msg(msg)
-
-    def _on_mcp_msg(self, msg):
-        mcp_id = msg.get("id")
-        if mcp_id is None:
-            self._log("notification %s" % msg.get("method"))
-            return
-        method = msg["method"]
-        params = msg.get("params")
-        if not isinstance(params, dict):
-            params = {}
-        if method == "initialize":
-            pv = params.get("protocolVersion")
-            self._send_mcp_result(mcp_id, {
-                "protocolVersion": pv if isinstance(pv, str) and pv else DEFAULT_PROTOCOL_VERSION,
-                "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                "instructions": "Live Neovim buffers and LSP state via nvimcp tools.",
-            })
-        elif method == "ping":
-            self._send_mcp_result(mcp_id, {})
-        elif method == "tools/list":
-            self._needs_nvim(mcp_id, "list_tools", {})
-        elif method == "tools/call":
-            name = params.get("name")
-            arguments = params.get("arguments")
-            if not isinstance(name, str) or not name:
-                self._send_mcp_error(mcp_id, -32602, "tools/call requires params.name")
-            elif arguments is not None and not isinstance(arguments, dict):
-                self._send_mcp_error(mcp_id, -32602, "params.arguments must be an object")
-            else:
-                self._needs_nvim(mcp_id, "call_tool", {"name": name, "arguments": arguments or {}})
-        elif method == "prompts/list":
-            self._send_mcp_result(mcp_id, {"prompts": []})
-        elif method == "resources/list":
-            self._send_mcp_result(mcp_id, {"resources": []})
-        elif method == "resources/templates/list":
-            self._send_mcp_result(mcp_id, {"resourceTemplates": []})
-        elif method == "logging/setLevel":
-            self._send_mcp_result(mcp_id, {})
-        else:
-            self._send_mcp_error(mcp_id, -32601, "method not found: %s" % method)
-
     def _needs_nvim(self, mcp_id, what, params):
         try:
             if not self.connected:
@@ -206,7 +136,7 @@ class NvimcpProxy:
                 if self.connect_started is None:
                     self.connect_started = time.monotonic()
             else:
-                self._send_mcp_error(mcp_id, -32603, str(e))
+                self.mcp.send_error(mcp_id, -32603, str(e))
 
     def _park(self, mcp_id, what, params):
         if not any(pe[0] == mcp_id for pe in self.parked):
@@ -221,7 +151,7 @@ class NvimcpProxy:
         if self.connect_started is not None and now - self.connect_started > self.wait:
             err = self.last_connect_err or "no nvimcp session found"
             for mcp_id, _what, _params in self.parked:
-                self._send_mcp_error(
+                self.mcp.send_error(
                     mcp_id, -32603, "%s (waited %.0fs for an nvim session)" % (err, self.wait)
                 )
             self.parked = []
@@ -304,7 +234,7 @@ class NvimcpProxy:
             if meta["kind"] == "health":
                 self._nvim_died("nvim rejected the nvimcp health check: %s%s" % (text, self._plugin_hint(text)))
             else:
-                self._send_mcp_error(meta["mcp_id"], -32603, "nvim rpc failed: %s" % text)
+                self.mcp.send_error(meta["mcp_id"], -32603, "nvim rpc failed: %s" % text)
             return
         if meta["kind"] == "health":
             if result is True:
@@ -316,30 +246,7 @@ class NvimcpProxy:
             else:
                 self._nvim_died("nvim has nvimcp loaded but the server is not started (run :NvimcpStart in nvim)")
             return
-        self._mcp_result_from(meta, result)
-
-    def _mcp_result_from(self, meta, result):
-        what = meta["what"]
-        if not isinstance(result, dict):
-            self._send_mcp_error(meta["mcp_id"], -32603, "nvimcp returned an unexpected response for %s" % what)
-            return
-        if result.get("error") is not None:
-            if what == "call_tool":
-                self._send_mcp_result(meta["mcp_id"], {
-                    "content": [{"type": "text", "text": str(result["error"])}],
-                    "isError": True,
-                })
-            else:
-                self._send_mcp_error(meta["mcp_id"], -32603, str(result["error"]))
-            return
-        if what == "list_tools":
-            tools = result.get("tools", [])
-            self._send_mcp_result(meta["mcp_id"], {"tools": tools if isinstance(tools, list) else []})
-        else:
-            self._send_mcp_result(meta["mcp_id"], {
-                "content": [{"type": "text", "text": json.dumps(result.get("result"), **JSON_DUMP_KW)}]
-            })
-
+        self.mcp.result_from_nvimcp(meta, result)
     def _nvim_err_text(self, err):
         if isinstance(err, dict):
             msg = err.get("message")
@@ -356,9 +263,9 @@ class NvimcpProxy:
         for msgid in list(self.pending):
             meta = self.pending.pop(msgid)
             if meta["kind"] == "mcp":
-                self._send_mcp_error(meta["mcp_id"], -32603, reason)
+                self.mcp.send_error(meta["mcp_id"], -32603, reason)
         for mcp_id, _what, _params in self.parked:
-            self._send_mcp_error(mcp_id, -32603, reason)
+            self.mcp.send_error(mcp_id, -32603, reason)
         self.parked = []
 
     def _close_nvim(self):
@@ -374,21 +281,6 @@ class NvimcpProxy:
             self.sock = None
         self.connected = False
         self.nvim_rx = bytearray()
-
-    def _send_mcp_result(self, mcp_id, result):
-        self._send({"jsonrpc": "2.0", "id": mcp_id, "result": result})
-
-    def _send_mcp_error(self, mcp_id, code, message):
-        self._send({"jsonrpc": "2.0", "id": mcp_id, "error": {"code": code, "message": message}})
-
-    def _send(self, msg):
-        try:
-            sys.stdout.buffer.write((json.dumps(msg, **JSON_DUMP_KW) + "\n").encode("utf-8"))
-            sys.stdout.buffer.flush()
-        except (BrokenPipeError, OSError):
-            self._shutdown(1)
-
-
 def main():
     p = argparse.ArgumentParser(
         prog="nvimcp-proxy",
