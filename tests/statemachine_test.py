@@ -2,10 +2,10 @@
 
 # Characterization tests for the proxy state machine: parking, connect retry,
 # wait windows, timeouts, health handling, framing, and death/reconnect.
-# Bug A (stale wait window) was fixed in Phase 1a and its pin flipped to
-# t_wait_window_rearms_after_expiry. The remaining KNOWN-ISSUE markers pin
-# bug B (EOF behavior) until Phase 1b flips them — never preemptively:
-# the marker flips in the same commit as the production fix.
+# No KNOWN-ISSUE pins remain: bug A (stale wait window) was fixed in
+# Phase 1a and bug B (EOF honesty) in Phase 1b; their pins were flipped in
+# the same commits as the fixes. When adding a new pin for a found bug,
+# mark it KNOWN-ISSUE and flip it only together with the production fix.
 #
 # Run: python3 tests/statemachine_test.py
 
@@ -617,11 +617,11 @@ def t_connect_error_translation():
 			and "is the nvim session still alive?" in p.last_connect_err, p.last_connect_err)
 
 
-def t_known_issue_eof_flush_skips_last_try():
-	# KNOWN-ISSUE (bug B): _flush_parked_on_eof promises "one last discovery
-	# try" but _pump_connect is gated by next_connect_retry, so the final
-	# attempt usually never runs. Step C should make the last try real and
-	# flip this assertion.
+def t_eof_reports_parked_without_last_ditch_connect():
+	# Fixed in Phase 1b (was bug B): EOF no longer promises a "one last
+	# discovery try". It reports the pending discovery error to every parked
+	# request, resets the window, and exits — deterministically, because a
+	# fresh async connect could never complete before the loop tears down.
 	with env() as (p, clock, sink):
 		calls = []
 		def boom():
@@ -632,30 +632,45 @@ def t_known_issue_eof_flush_skips_last_try():
 		p._pump_connect()
 		ok("retry slot taken by pump", len(calls) == 2 and p.next_connect_retry > clock.now, (calls, p.next_connect_retry))
 		p._on_stdin_eof()
-		ok("KNOWN-ISSUE: EOF did NOT attempt one last discovery (gate skipped it)",
-			len(calls) == 2, calls)
-		ok("EOF flush sends raw last_connect_err per parked id",
-			err_text(by_id(sink, 1)) == "gone" and not p.parked, by_id(sink, 1))
+		ok("EOF attempts no further discovery (by design)", len(calls) == 2, calls)
+		ok("EOF flush reports raw last_connect_err per parked id and resets window",
+			err_text(by_id(sink, 1)) == "gone" and not p.parked
+			and p.connect_started is None and p.last_connect_err is None,
+			(by_id(sink, 1), p.connect_started, p.last_connect_err))
 		ok("EOF exits 0", p.exit_code == 0, p.exit_code)
 
 
-def t_known_issue_eof_late_connect_drops_parked():
-	# KNOWN-ISSUE (bug B, twin): if the EOF pump DOES connect, parked
-	# requests are neither answered (health is async and the loop is over)
-	# nor errored (the flush condition sees a socket). The client has hung
-	# up anyway, so today this is invisible; pinned so a future change is a
-	# conscious choice.
+def t_eof_with_gate_eligible_reports_instead_of_connecting():
+	# Fixed in Phase 1b (bug B twin): previously, if the retry gate had
+	# elapsed, EOF would start a doomed connect and silently drop parked
+	# requests. Now EOF always reports them.
 	with env() as (p, clock, sink):
 		no_session(p, "gone")
 		client(p, 1, "tools/list")
-		s = FakeSocket()
-		p.finder.discover = lambda: {"socket": "/late.sock", "pid": 7}
+		calls = []
+		def succeed():
+			calls.append(1)
+			return {"socket": "/late.sock", "pid": 7}
+		p.finder.discover = succeed
 		clock.advance(CONNECT_RETRY + 0.1)
+		p._on_stdin_eof()
+		ok("EOF reports parked instead of starting a doomed connect",
+			err_text(by_id(sink, 1)) == "gone" and p.bridge.sock is None
+			and not p.parked and p.exit_code == 0 and not calls,
+			(responses(sink), p.bridge.sock, calls))
+
+
+def t_eof_with_health_pending_reports_parked_generic():
+	with env() as (p, clock, sink):
+		s = FakeSocket()
+		p.finder.discover = lambda: {"socket": "/fake.sock", "pid": 1}
 		with patched_socket(s):
-			p._on_stdin_eof()
-		ok("KNOWN-ISSUE: EOF with successful late connect -> parked silently dropped",
-			not responses(sink) and len(p.parked) == 1 and p.bridge.sock is not None and p.exit_code == 0,
-			(responses(sink), p.parked, p.bridge.sock))
+			client(p, 1, "tools/list")
+		ok("health pending, parked waiting, no error stamp",
+			p.bridge.sock is s and p.last_connect_err is None, p.last_connect_err)
+		p._on_stdin_eof()
+		ok("EOF with pending health still reports parked (generic reason)",
+			err_text(by_id(sink, 1)) == "no nvimcp session found" and p.exit_code == 0, by_id(sink, 1))
 
 
 def t_stdout_broken_pipe_exits_1():
@@ -722,8 +737,9 @@ def main():
 		t_died_fails_parked_and_pending,
 		t_reconnect_after_death,
 		t_connect_error_translation,
-		t_known_issue_eof_flush_skips_last_try,
-		t_known_issue_eof_late_connect_drops_parked,
+		t_eof_reports_parked_without_last_ditch_connect,
+		t_eof_with_gate_eligible_reports_instead_of_connecting,
+		t_eof_with_health_pending_reports_parked_generic,
 		t_stdout_broken_pipe_exits_1,
 		t_select_timeout_math,
 		t_stdin_line_framing_and_eof,

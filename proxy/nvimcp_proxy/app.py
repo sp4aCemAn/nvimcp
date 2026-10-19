@@ -99,14 +99,17 @@ class NvimcpProxy:
             self.bridge.send_tool(mcp_id, what, params)
 
     def _flush_parked_on_eof(self) -> None:
-        """stdin closed while waiting for a session: one last discovery try
-        via the normal pump, then report and go."""
-        self._pump_connect()
-        if self.parked and self.bridge.sock is None:
-            err = self.last_connect_err or "no nvimcp session found"
-            for mcp_id, _what, _params in self.parked:
-                self.mcp.send_error(mcp_id, -32603, err)
-            self.parked = []
+        """stdin closed while parked requests wait on a session: report the
+        pending discovery error (or a generic one) and exit. No last-ditch
+        connect: the loop tears down right after this, so a fresh health
+        round trip could never complete — and the client is gone anyway."""
+        if not self.parked:
+            return
+        err = self.last_connect_err or "no nvimcp session found"
+        for mcp_id, _what, _params in self.parked:
+            self.mcp.send_error(mcp_id, -32603, err)
+        self.parked = []
+        self._reset_connect_window()
 
     def _select_timeout(self) -> float:
         timeout = SELECT_TICK

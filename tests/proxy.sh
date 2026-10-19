@@ -11,8 +11,8 @@ fi
 
 python3 tests/msgpack_test.py || fail=1
 python3 tests/discovery_test.py || fail=1
-# characterization suite: pins current state-machine behavior, including
-# KNOWN-ISSUE cases (they PASS today; their fix flips the assertions)
+# state-machine characterization suite (parking, windows, timeouts, EOF;
+# former KNOWN-ISSUE pins were flipped with their Phase 1 fixes)
 python3 tests/statemachine_test.py || fail=1
 
 NVIM=$(command -v nvim)
