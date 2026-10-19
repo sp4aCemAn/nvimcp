@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from . import JSON_DUMP_KW
 from .discovery import SessionEntry
-from .errors import ProxyError
+from .errors import INTERNAL_ERROR, NO_SESSION, NoSessionError, SESSION_TIMEOUT
 from .mp import Incomplete, mp_decode_one, mp_encode
 
 RPC_REQUEST = 0
@@ -33,7 +33,7 @@ class NvimBridge:
         sel: selectors.BaseSelector,
         send_error: Callable[[Any, int, str], None],
         result_from: Callable[[RequestMeta, Any], None],
-        on_died: Callable[[str], None],
+        on_died: Callable[[str, int], None],
         on_ready: Callable[[], None],
     ) -> None:
         self.timeout = timeout
@@ -58,7 +58,7 @@ class NvimBridge:
             s.connect(target["socket"])
         except OSError as e:
             s.close()
-            raise ProxyError(
+            raise NoSessionError(
                 "cannot connect to nvim socket %s: %s (is the nvim session still alive?)"
                 % (target["socket"], e)
             )
@@ -120,7 +120,7 @@ class NvimBridge:
             if meta["kind"] == "health":
                 self.die("nvim rejected the nvimcp health check: %s%s" % (text, self._plugin_hint(text)))
             else:
-                self.send_error(meta["mcp_id"], -32603, "nvim rpc failed: %s" % text)
+                self.send_error(meta["mcp_id"], INTERNAL_ERROR, "nvim rpc failed: %s" % text)
             return
         if meta["kind"] == "health":
             if result is True:
@@ -149,20 +149,23 @@ class NvimBridge:
             if meta["deadline"] > now:
                 continue
             if meta["kind"] == "health":
-                self.die("nvim health check timed out")
+                self.die("nvim health check timed out", SESSION_TIMEOUT)
                 return
             del self.pending[msgid]
             self.send_error(
-                meta["mcp_id"], -32603, "nvim rpc timed out after %.0fs (%s)" % (self.timeout, meta["what"])
+                meta["mcp_id"], SESSION_TIMEOUT, "nvim rpc timed out after %.0fs (%s)" % (self.timeout, meta["what"])
             )
 
-    def die(self, reason: str) -> None:
+    def die(self, reason: str, code: int = NO_SESSION) -> None:
+        """Tear the connection down, failing every in-flight and parked
+        request with reason/code. Death defaults to NO_SESSION; a hung
+        health probe passes SESSION_TIMEOUT."""
         self.close()
         for msgid in list(self.pending):
             meta = self.pending.pop(msgid)
             if meta["kind"] == "mcp":
-                self.send_error(meta["mcp_id"], -32603, reason)
-        self.on_died(reason)
+                self.send_error(meta["mcp_id"], code, reason)
+        self.on_died(reason, code)
 
     def close(self) -> None:
         if self.sock is not None:

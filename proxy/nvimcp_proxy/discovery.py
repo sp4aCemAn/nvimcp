@@ -8,7 +8,7 @@ import sys
 import tempfile
 from typing import Any, Callable, Dict, List, Optional
 
-from .errors import ProxyError
+from .errors import NoSessionError
 
 SessionEntry = Dict[str, Any]
 
@@ -161,7 +161,7 @@ class SessionFinder:
             and not os.environ.get("XDG_RUNTIME_DIR")
             and sys.platform != "darwin"
         ):
-            raise ProxyError(
+            raise NoSessionError(
                 "no sessions registry at /run/user/%d/nvimcp (sessions.json or sessions/*.json); "
                 "is nvim running with nvimcp started? "
                 "(this is the Linux default path; on macOS pass --sessions-file, --pid "
@@ -193,7 +193,7 @@ class SessionFinder:
                 if e.get("pid") == self.pid_arg:
                     return e
             extra = "; available: %s" % self._describe(entries) if entries else ""
-            raise ProxyError("no nvimcp session with pid %s%s" % (self.pid_arg, extra))
+            raise NoSessionError("no nvimcp session with pid %s%s" % (self.pid_arg, extra))
         # Terminal ancestry: an agent launched inside an nvim terminal (any
         # child of an nvimcp session's process tree) belongs to that session,
         # regardless of the shell's cwd.
@@ -220,7 +220,7 @@ class SessionFinder:
                 )
             return related[0]
         if not entries:
-            raise ProxyError(
+            raise NoSessionError(
                 "no nvimcp sessions found in %s; start nvim and run :NvimcpStart" % (", ".join(paths) or "default locations")
             )
         # No cwd-related session anywhere. Sole live session is unambiguous —
@@ -230,13 +230,13 @@ class SessionFinder:
         if len(entries) > 1:
             opted = [e for e in entries if e.get("fallback_recent")]
             if not opted:
-                raise ProxyError(
+                raise NoSessionError(
                     "no nvimcp session related to %s; set fallback_recent=true in the nvimcp "
                     "config of the session you want agents opened anywhere to reach, or pass "
                     "--pid/--socket. Available: %s" % (cwd, self._describe(entries))
                 )
             if len(opted) > 1:
-                raise ProxyError(
+                raise NoSessionError(
                     "no session related to %s and several opted in to fallback_recent; pass "
                     "--pid or --socket. Available (opted): %s" % (cwd, self._describe(opted))
                 )

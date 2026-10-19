@@ -7,6 +7,11 @@
 # the same commits as the fixes. When adding a new pin for a found bug,
 # mark it KNOWN-ISSUE and flip it only together with the production fix.
 #
+# Phase 2 error model (pinned here): -32001 session unavailable (not found,
+# refused, unreachable, gone), -32002 session operation timed out, -32603
+# reserved for nvim-side internal faults (rpc failures, malformed tool
+# replies), standard -32700/-32602/-32601 for client-side framing.
+#
 # Run: python3 tests/statemachine_test.py
 
 import json
@@ -23,7 +28,7 @@ from nvimcp_proxy import bridge as bridge_mod
 from nvimcp_proxy import mcp as mcp_mod
 from nvimcp_proxy.app import NvimcpProxy, CONNECT_RETRY, SELECT_TICK
 from nvimcp_proxy.bridge import HEALTH_LUA, NVIMCP_RPC_LUA
-from nvimcp_proxy.errors import ProxyError
+from nvimcp_proxy.errors import NoSessionError, ProxyError
 from nvimcp_proxy.mp import mp_decode_one, mp_encode
 
 n_fail = 0
@@ -202,8 +207,10 @@ def establish(p, sock):
 
 
 def no_session(p, msg="no nvimcp sessions found in /fake-default"):
+	"""discovery failures surface as NoSessionError since Phase 2; helpers
+	must raise what discovery.py actually raises now."""
 	def boom():
-		raise ProxyError(msg)
+		raise NoSessionError(msg)
 	p.finder.discover = boom
 
 
@@ -288,8 +295,8 @@ def t_wait_zero_fails_immediately():
 		no_session(p, "nope")
 		client(p, 1, "tools/list")
 		r = by_id(sink, 1)
-		ok("wait=0 -> immediate -32603 with discovery error text",
-			r["error"]["code"] == -32603 and err_text(r) == "nope", r)
+		ok("wait=0 -> immediate -32001 (NoSessionError.code) with discovery error text",
+			r["error"]["code"] == -32001 and err_text(r) == "nope", r)
 		ok("nothing parked", not p.parked, p.parked)
 
 
@@ -317,8 +324,9 @@ def t_wait_window_expiry_errors():
 		clock.advance(6.7)
 		p._pump_connect()
 		r = by_id(sink, 1)
-		ok("window expiry sends waited-Ns error, exact text",
-			err_text(r) == "no nvimcp sessions found in /fake-default (waited 10s for an nvim session)", r)
+		ok("window expiry sends waited-Ns error, exact text, -32001",
+			err_text(r) == "no nvimcp sessions found in /fake-default (waited 10s for an nvim session)"
+			and r["error"]["code"] == -32001, r)
 		ok("parked cleared after expiry", not p.parked, p.parked)
 
 
@@ -341,8 +349,9 @@ def t_wait_window_rearms_after_expiry():
 			by_id(sink, 2) is None and p.connect_started == 1010.1, (responses(sink), p.connect_started))
 		clock.advance(10.1)
 		p._pump_connect()
-		ok("second request gets its own waited-Ns error",
-			"waited 10s" in err_text(by_id(sink, 2)) and not p.parked
+		ok("second request gets its own waited-Ns error at -32001",
+			"waited 10s" in err_text(by_id(sink, 2))
+			and by_id(sink, 2)["error"]["code"] == -32001 and not p.parked
 			and p.connect_started is None, (by_id(sink, 2), p.connect_started))
 
 
@@ -390,8 +399,9 @@ def t_health_false_and_err():
 			client(p, 1, "tools/list")
 		feed(p, s, [1, 1, None, False])
 		r = by_id(sink, 1)
-		ok("health False -> parked fail with :NvimcpStart reason, socket closed",
-			"NvimcpStart" in err_text(r) and not p.bridge.sock and not p.bridge.connected, r)
+		ok("health False -> parked fail with :NvimcpStart reason at -32001, socket closed",
+			"NvimcpStart" in err_text(r) and r["error"]["code"] == -32001
+			and not p.bridge.sock and not p.bridge.connected, r)
 	with env() as (p, clock, sink):
 		s = FakeSocket()
 		p.finder.discover = lambda: {"socket": "/fake.sock", "pid": 4242}
@@ -492,8 +502,9 @@ def t_mcp_request_timeout():
 		clock.advance(31.0)
 		p.bridge.check_timeouts(clock.monotonic())
 		r = by_id(sink, 1)
-		ok("mcp request timeout text exact",
-			err_text(r) == "nvim rpc timed out after 30s (call_tool)", r)
+		ok("mcp request timeout text exact at -32002",
+			err_text(r) == "nvim rpc timed out after 30s (call_tool)"
+			and r["error"]["code"] == -32002, r)
 		ok("timed-out request dropped from pending, connection kept",
 			not p.bridge.pending and p.bridge.connected, (p.bridge.pending, p.bridge.connected))
 
@@ -507,8 +518,9 @@ def t_health_timeout_kills_session():
 		clock.advance(31.0)
 		p.bridge.check_timeouts(clock.monotonic())
 		r = by_id(sink, 1)
-		ok("health timeout kills parked with exact reason",
-			err_text(r) == "nvim health check timed out" and not p.bridge.sock and not p.parked, r)
+		ok("health timeout kills parked with exact reason at -32002",
+			err_text(r) == "nvim health check timed out" and r["error"]["code"] == -32002
+			and not p.bridge.sock and not p.parked, r)
 
 
 def t_partial_frames():
@@ -553,8 +565,9 @@ def t_socket_death_paths():
 			s._chunks.extend(chunks)
 			s.recv_error = recv_err
 			p.bridge.poll()
-			ok("death path %s: exact reason, socket closed" % label,
-				err_text(by_id(sink, 1)) == want and not p.bridge.sock, (by_id(sink, 1), want))
+			ok("death path %s: exact reason at -32001, socket closed" % label,
+				err_text(by_id(sink, 1)) == want and by_id(sink, 1)["error"]["code"] == -32001
+				and not p.bridge.sock, (by_id(sink, 1), want))
 
 
 def t_sendall_failure():
@@ -563,8 +576,9 @@ def t_sendall_failure():
 		establish(p, s)
 		s.sendall_error = OSError("write boom")
 		client(p, 1, "tools/call", {"name": "x"})
-		ok("sendall OSError -> die with write-failed reason, pending cleared",
+		ok("sendall OSError -> die with write-failed reason at -32001, pending cleared",
 			err_text(by_id(sink, 1)) == "nvim socket write failed: write boom"
+			and by_id(sink, 1)["error"]["code"] == -32001
 			and not p.bridge.sock and not p.bridge.pending, (by_id(sink, 1), p.bridge.pending))
 
 
@@ -576,9 +590,10 @@ def t_died_fails_parked_and_pending():
 		p._park(2, "list_tools", {})
 		s._chunks.append(b"")
 		p.bridge.poll()
-		ok("die fails pending AND parked with the same reason",
+		ok("die fails pending AND parked with the same reason and code",
 			err_text(by_id(sink, 1)) == "nvim session disconnected"
 			and err_text(by_id(sink, 2)) == "nvim session disconnected"
+			and by_id(sink, 1)["error"]["code"] == -32001 == by_id(sink, 2)["error"]["code"]
 			and not p.parked, responses(sink))
 
 
@@ -633,9 +648,9 @@ def t_eof_reports_parked_without_last_ditch_connect():
 		ok("retry slot taken by pump", len(calls) == 2 and p.next_connect_retry > clock.now, (calls, p.next_connect_retry))
 		p._on_stdin_eof()
 		ok("EOF attempts no further discovery (by design)", len(calls) == 2, calls)
-		ok("EOF flush reports raw last_connect_err per parked id and resets window",
-			err_text(by_id(sink, 1)) == "gone" and not p.parked
-			and p.connect_started is None and p.last_connect_err is None,
+		ok("EOF flush reports raw last_connect_err per parked id at -32001 and resets window",
+			err_text(by_id(sink, 1)) == "gone" and by_id(sink, 1)["error"]["code"] == -32001
+			and not p.parked and p.connect_started is None and p.last_connect_err is None,
 			(by_id(sink, 1), p.connect_started, p.last_connect_err))
 		ok("EOF exits 0", p.exit_code == 0, p.exit_code)
 
@@ -655,8 +670,8 @@ def t_eof_with_gate_eligible_reports_instead_of_connecting():
 		clock.advance(CONNECT_RETRY + 0.1)
 		p._on_stdin_eof()
 		ok("EOF reports parked instead of starting a doomed connect",
-			err_text(by_id(sink, 1)) == "gone" and p.bridge.sock is None
-			and not p.parked and p.exit_code == 0 and not calls,
+			err_text(by_id(sink, 1)) == "gone" and by_id(sink, 1)["error"]["code"] == -32001
+			and p.bridge.sock is None and not p.parked and p.exit_code == 0 and not calls,
 			(responses(sink), p.bridge.sock, calls))
 
 
@@ -669,8 +684,9 @@ def t_eof_with_health_pending_reports_parked_generic():
 		ok("health pending, parked waiting, no error stamp",
 			p.bridge.sock is s and p.last_connect_err is None, p.last_connect_err)
 		p._on_stdin_eof()
-		ok("EOF with pending health still reports parked (generic reason)",
-			err_text(by_id(sink, 1)) == "no nvimcp session found" and p.exit_code == 0, by_id(sink, 1))
+		ok("EOF with pending health still reports parked (generic reason at -32001)",
+			err_text(by_id(sink, 1)) == "no nvimcp session found"
+			and by_id(sink, 1)["error"]["code"] == -32001 and p.exit_code == 0, by_id(sink, 1))
 
 
 def t_stdout_broken_pipe_exits_1():

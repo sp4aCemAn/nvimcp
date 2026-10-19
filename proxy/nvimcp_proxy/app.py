@@ -9,7 +9,7 @@ from typing import Any, Dict, List, NoReturn, Optional, Tuple
 
 from .bridge import NvimBridge
 from .discovery import SessionFinder
-from .errors import ProxyError
+from .errors import NO_SESSION, ProxyError
 from .mcp import StdioEndpoint
 
 DEFAULT_TIMEOUT: float = 30.0
@@ -86,9 +86,9 @@ class NvimcpProxy:
         self.next_connect_retry = 0.0
         self.last_connect_err = None
 
-    def _nvim_died(self, reason: str) -> None:
+    def _nvim_died(self, reason: str, code: int) -> None:
         for mcp_id, _what, _params in self.parked:
-            self.mcp.send_error(mcp_id, -32603, reason)
+            self.mcp.send_error(mcp_id, code, reason)
         self.parked = []
         self._reset_connect_window()
 
@@ -107,7 +107,7 @@ class NvimcpProxy:
             return
         err = self.last_connect_err or "no nvimcp session found"
         for mcp_id, _what, _params in self.parked:
-            self.mcp.send_error(mcp_id, -32603, err)
+            self.mcp.send_error(mcp_id, NO_SESSION, err)
         self.parked = []
         self._reset_connect_window()
 
@@ -139,7 +139,7 @@ class NvimcpProxy:
                 if self.connect_started is None:
                     self.connect_started = time.monotonic()
             else:
-                self.mcp.send_error(mcp_id, -32603, str(e))
+                self.mcp.send_error(mcp_id, e.code, str(e))
 
     def _park(self, mcp_id: Any, what: str, params: Dict[str, Any]) -> None:
         if not any(pe[0] == mcp_id for pe in self.parked):
@@ -155,7 +155,7 @@ class NvimcpProxy:
             err = self.last_connect_err or "no nvimcp session found"
             for mcp_id, _what, _params in self.parked:
                 self.mcp.send_error(
-                    mcp_id, -32603, "%s (waited %.0fs for an nvim session)" % (err, self.wait)
+                    mcp_id, NO_SESSION, "%s (waited %.0fs for an nvim session)" % (err, self.wait)
                 )
             self.parked = []
             self._reset_connect_window()

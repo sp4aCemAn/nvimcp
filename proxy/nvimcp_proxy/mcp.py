@@ -11,6 +11,7 @@ from . import (
     SERVER_NAME,
     SERVER_VERSION,
 )
+from .errors import INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND, PARSE_ERROR
 
 RequestMeta = Dict[str, Any]
 
@@ -58,7 +59,7 @@ class StdioEndpoint:
         try:
             msg = json.loads(text)
         except ValueError as e:
-            self.send_error(None, -32700, "parse error: %s" % e)
+            self.send_error(None, PARSE_ERROR, "parse error: %s" % e)
             return
         if isinstance(msg, dict) and isinstance(msg.get("method"), str):
             self._on_msg(msg)
@@ -88,9 +89,9 @@ class StdioEndpoint:
             name = params.get("name")
             arguments = params.get("arguments")
             if not isinstance(name, str) or not name:
-                self.send_error(mcp_id, -32602, "tools/call requires params.name")
+                self.send_error(mcp_id, INVALID_PARAMS, "tools/call requires params.name")
             elif arguments is not None and not isinstance(arguments, dict):
-                self.send_error(mcp_id, -32602, "params.arguments must be an object")
+                self.send_error(mcp_id, INVALID_PARAMS, "params.arguments must be an object")
             else:
                 self.on_needs_nvim(mcp_id, "call_tool", {"name": name, "arguments": arguments or {}})
         elif method == "prompts/list":
@@ -102,7 +103,7 @@ class StdioEndpoint:
         elif method == "logging/setLevel":
             self.send_result(mcp_id, {})
         else:
-            self.send_error(mcp_id, -32601, "method not found: %s" % method)
+            self.send_error(mcp_id, METHOD_NOT_FOUND, "method not found: %s" % method)
 
     def on_notification(self, method: Any) -> None:
         pass
@@ -110,7 +111,7 @@ class StdioEndpoint:
     def result_from_nvimcp(self, meta: RequestMeta, result: Any) -> None:
         what = meta["what"]
         if not isinstance(result, dict):
-            self.send_error(meta["mcp_id"], -32603, "nvimcp returned an unexpected response for %s" % what)
+            self.send_error(meta["mcp_id"], INTERNAL_ERROR, "nvimcp returned an unexpected response for %s" % what)
             return
         if result.get("error") is not None:
             if what == "call_tool":
@@ -119,7 +120,7 @@ class StdioEndpoint:
                     "isError": True,
                 })
             else:
-                self.send_error(meta["mcp_id"], -32603, str(result["error"]))
+                self.send_error(meta["mcp_id"], INTERNAL_ERROR, str(result["error"]))
             return
         if what == "list_tools":
             tools = result.get("tools", [])
