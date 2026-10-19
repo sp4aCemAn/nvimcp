@@ -2,9 +2,10 @@
 
 # Characterization tests for the proxy state machine: parking, connect retry,
 # wait windows, timeouts, health handling, framing, and death/reconnect.
-# These pin CURRENT behavior — including two bugs marked KNOWN-ISSUE, which
-# the planned state-machine work will flip. Do not "fix" assertions here;
-# change production behavior in its own commit and update the marker.
+# Bug A (stale wait window) was fixed in Phase 1a and its pin flipped to
+# t_wait_window_rearms_after_expiry. The remaining KNOWN-ISSUE markers pin
+# bug B (EOF behavior) until Phase 1b flips them — never preemptively:
+# the marker flips in the same commit as the production fix.
 #
 # Run: python3 tests/statemachine_test.py
 
@@ -321,23 +322,64 @@ def t_wait_window_expiry_errors():
 		ok("parked cleared after expiry", not p.parked, p.parked)
 
 
-def t_known_issue_stale_wait_window():
-	# KNOWN-ISSUE (bug A): connect_started is never reset after a window
-	# expires, so the NEXT parked request fails instantly instead of getting
-	# a fresh wait window. Step C should make the second window real and
-	# flip this assertion.
+def t_wait_window_rearms_after_expiry():
+	# Fixed in Phase 1a (was bug A "stale wait window"): a window expiry
+	# resets connect_started/retry/backoff/error, so the NEXT parked request
+	# gets a real, fresh wait window.
 	with env() as (p, clock, sink):
 		no_session(p, "gone")
 		client(p, 1, "tools/list")
 		clock.advance(10.1)
 		p._pump_connect()
 		ok("first request failed after its own window", by_id(sink, 1) is not None, responses(sink))
+		ok("expiry reset the window state",
+			p.connect_started is None and p.last_connect_err is None and p.next_connect_retry == 0.0,
+			(p.connect_started, p.last_connect_err, p.next_connect_retry))
 		client(p, 2, "tools/list")
 		p._pump_connect()
-		r2 = by_id(sink, 2)
-		ok("KNOWN-ISSUE stale window: second request fails WITHOUT a new wait period",
-			r2 is not None and "waited 10s" in err_text(r2) and p.connect_started == 1000.0,
-			(r2, p.connect_started))
+		ok("second request parks in a FRESH window (no instant fail)",
+			by_id(sink, 2) is None and p.connect_started == 1010.1, (responses(sink), p.connect_started))
+		clock.advance(10.1)
+		p._pump_connect()
+		ok("second request gets its own waited-Ns error",
+			"waited 10s" in err_text(by_id(sink, 2)) and not p.parked
+			and p.connect_started is None, (by_id(sink, 2), p.connect_started))
+
+
+def t_window_resets_on_ready():
+	# Fixed in Phase 1a: health-ready clears the window so a later failed
+	# episode re-arms from scratch instead of inheriting a stale stamp.
+	with env() as (p, clock, sink):
+		calls = []
+		def failing():
+			calls.append(1)
+			raise ProxyError("gone")
+		p.finder.discover = failing
+		client(p, 1, "tools/list")
+		ok("failed discovery armed the window",
+			p.connect_started == 1000.0 and p.last_connect_err == "gone", (p.connect_started, p.last_connect_err))
+		s = FakeSocket()
+		p.finder.discover = lambda: {"socket": "/fake.sock", "pid": 1}
+		clock.advance(CONNECT_RETRY)
+		with patched_socket(s):
+			p._pump_connect()
+		ok("retry connected; window stays armed until health resolves",
+			p.bridge.sock is not None and p.connect_started == 1000.0, p.connect_started)
+		feed(p, s, [1, 1, None, True])
+		ok("health-ready reset the window and replayed parked",
+			p.connect_started is None and p.last_connect_err is None
+			and p.next_connect_retry == 0.0 and not p.parked,
+			(p.connect_started, p.last_connect_err, p.next_connect_retry, p.parked))
+		s._chunks.append(b"")
+		p.bridge.poll()
+		ok("death reset the window too",
+			not p.bridge.sock and p.connect_started is None and p.next_connect_retry == 0.0,
+			(p.bridge.sock, p.connect_started))
+		p.finder.discover = failing
+		client(p, 2, "tools/list")
+		ok("a post-death park re-arms a fresh window",
+			len(calls) == 2 and p.connect_started == clock.now and p.parked == [(2, "list_tools", {})],
+			(calls, p.connect_started, p.parked))
 
 
 def t_health_false_and_err():
@@ -661,7 +703,8 @@ def main():
 		t_park_dedups_by_mcp_id,
 		t_wait_zero_fails_immediately,
 		t_wait_window_expiry_errors,
-		t_known_issue_stale_wait_window,
+		t_wait_window_rearms_after_expiry,
+		t_window_resets_on_ready,
 		t_health_false_and_err,
 		t_call_tool_error_is_error_result,
 		t_non_tool_error_is_protocol_error,

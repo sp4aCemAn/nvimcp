@@ -78,12 +78,22 @@ class NvimcpProxy:
     def _stdout_dead(self) -> None:
         self._shutdown(1)
 
+    def _reset_connect_window(self) -> None:
+        """Clear the parked-discovery window. Every transition that ends a
+        discovery episode calls this so the next parked request gets a fresh
+        wait window instead of inheriting a stale stamp/backoff/error."""
+        self.connect_started = None
+        self.next_connect_retry = 0.0
+        self.last_connect_err = None
+
     def _nvim_died(self, reason: str) -> None:
         for mcp_id, _what, _params in self.parked:
             self.mcp.send_error(mcp_id, -32603, reason)
         self.parked = []
+        self._reset_connect_window()
 
     def _nvim_ready(self) -> None:
+        self._reset_connect_window()
         parked, self.parked = self.parked, []
         for mcp_id, what, params in parked:
             self.bridge.send_tool(mcp_id, what, params)
@@ -145,6 +155,7 @@ class NvimcpProxy:
                     mcp_id, -32603, "%s (waited %.0fs for an nvim session)" % (err, self.wait)
                 )
             self.parked = []
+            self._reset_connect_window()
             return
         if now >= self.next_connect_retry:
             self.next_connect_retry = now + CONNECT_RETRY
