@@ -196,8 +196,8 @@ class SessionFinder:
                     data = json.load(f)
             except FileNotFoundError:
                 continue
-            except (OSError, ValueError) as e:
-                self._warn("cannot read sessions file %s: %s" % (path, e))
+            except (OSError, ValueError) as err:
+                self._warn("cannot read sessions file %s: %s" % (path, err))
                 continue
             for e in (data or {}).values():
                 if isinstance(e, dict) and isinstance(e.get("socket"), str) and e["socket"] not in seen_sockets:

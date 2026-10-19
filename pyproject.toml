@@ -1,0 +1,6 @@
+[tool.mypy]
+python_version = "3.10"  # current mypy floor; runtime keeps 3.8 via __future__ annotations + typing generics
+files = ["proxy/nvimcp_proxy"]
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true

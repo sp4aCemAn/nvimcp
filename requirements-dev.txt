@@ -1,0 +1,3 @@
+# Dev-only tooling for proxy/nvimcp_proxy. The proxy runtime stays Python
+# stdlib only; nothing here is installed for end users.
+mypy

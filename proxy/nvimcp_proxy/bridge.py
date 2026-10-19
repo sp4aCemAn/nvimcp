@@ -85,12 +85,14 @@ class NvimBridge:
         self.next_msgid += 1
         meta["deadline"] = time.monotonic() + self.timeout
         self.pending[msgid] = meta
+        assert self.sock is not None  # caller contract: only after connect
         try:
             self.sock.sendall(mp_encode([RPC_REQUEST, msgid, method, params]))
         except OSError as e:
             self.die("nvim socket write failed: %s" % e)
 
     def poll(self) -> None:
+        assert self.sock is not None  # selector event implies the socket
         try:
             chunk = self.sock.recv(65536)
         except BlockingIOError:
