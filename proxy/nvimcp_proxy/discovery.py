@@ -49,16 +49,37 @@ class SessionFinder:
             self._ancestors = self._ancestor_pid_chain()
         return self._ancestors
 
+    def _ppid_via_proc(self, pid: int) -> Optional[int]:
+        """Parent pid from /proc/<pid>/status. The status file is stable
+        key/value text; /proc/<pid>/stat is deliberately NOT used because
+        the comm field may contain spaces and breaks naive field splits."""
+        try:
+            with open("/proc/%d/status" % pid, encoding="ascii", errors="replace") as f:
+                for line in f:
+                    if line.startswith("PPid:"):
+                        return int(line.split()[1])
+        except (OSError, ValueError):
+            return None
+        return None
+
     def _ancestor_pid_chain(self) -> List[int]:
         """Nearest-first pids of this process's ancestors.
 
         An agent (and therefore this proxy) launched inside an nvim terminal
         window is a descendant of that nvim session's process, so matching a
         session pid in this chain is an exact owner match — even when the
-        agent's shell cd'ed elsewhere. ps(1) keeps this portable on both
-        Linux and macOS (no /proc needed)."""
+        agent's shell cd'ed elsewhere. Linux reads the chain from /proc with
+        zero subprocesses; elsewhere ps(1) keeps it portable (no /proc)."""
         chain: List[int] = []
         pid = os.getpid()
+        if sys.platform.startswith("linux"):
+            for _ in range(32):
+                ppid = self._ppid_via_proc(pid)
+                if ppid is None or ppid <= 1:
+                    break
+                chain.append(ppid)
+                pid = ppid
+            return chain
         for _ in range(32):
             try:
                 out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True, timeout=2).stdout

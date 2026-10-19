@@ -11,6 +11,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "proxy"))
 
+from nvimcp_proxy import discovery as discovery_mod
 from nvimcp_proxy.discovery import SessionFinder
 
 n_fail = 0
@@ -90,6 +91,27 @@ def main():
 		a3 = p2._ancestor_pids()
 		ok("ancestor pids cached across discovery retries",
 			calls[0] == 1 and a1 is a2 is a3 and a1 == chain, "walks=%d" % calls[0])
+
+		# Phase 4: on Linux the chain must come from /proc with zero
+		# subprocess spawns; same invariants as the ps path.
+		if sys.platform.startswith("linux"):
+			ok("proc ppid of self equals getppid",
+				p._ppid_via_proc(os.getpid()) == os.getppid(), p._ppid_via_proc(os.getpid()))
+			ok("proc ppid of a never-existing pid is None",
+				p._ppid_via_proc(2 ** 30) is None, p._ppid_via_proc(2 ** 30))
+			spawns = []
+			orig_run = discovery_mod.subprocess.run
+			def counting(*a, **k):
+				spawns.append(1)
+				return orig_run(*a, **k)
+			discovery_mod.subprocess.run = counting
+			try:
+				proc_chain = make_finder()._ancestor_pid_chain()
+			finally:
+				discovery_mod.subprocess.run = orig_run
+			ok("linux chain walks /proc without spawning ps(1)",
+				not spawns and proc_chain and proc_chain[0] == os.getppid()
+				and all(x > 1 for x in proc_chain), spawns)
 
 	if n_fail > 0:
 		print("discovery tests: %d failures" % n_fail)
