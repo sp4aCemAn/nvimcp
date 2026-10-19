@@ -11,7 +11,17 @@ from . import (
     SERVER_NAME,
     SERVER_VERSION,
 )
-from .errors import INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND, PARSE_ERROR
+from .errors import (
+    INTERNAL_ERROR,
+    INVALID_PARAMS,
+    INVALID_REQUEST,
+    METHOD_NOT_FOUND,
+    PARSE_ERROR,
+)
+
+# An unterminated client line larger than this is treated as a broken or
+# hostile stream: report, then close. Generous enough for any real MCP call.
+DEFAULT_MAX_LINE = 16 * 1024 * 1024
 
 RequestMeta = Dict[str, Any]
 
@@ -33,6 +43,7 @@ class StdioEndpoint:
         self.on_eof = on_eof
         self.on_write_error = on_write_error
         self.log = log
+        self.max_line = DEFAULT_MAX_LINE
 
     def poll(self) -> None:
         try:
@@ -51,6 +62,10 @@ class StdioEndpoint:
             line = bytes(self.rx[:i])
             del self.rx[: i + 1]
             self._on_line(line)
+        if len(self.rx) > self.max_line:
+            self.send_error(None, INVALID_REQUEST,
+                            "stdin line exceeds %d bytes; closing" % self.max_line)
+            self.on_eof()
 
     def _on_line(self, line: bytes) -> None:
         text = line.strip()
@@ -61,8 +76,23 @@ class StdioEndpoint:
         except ValueError as e:
             self.send_error(None, PARSE_ERROR, "parse error: %s" % e)
             return
-        if isinstance(msg, dict) and isinstance(msg.get("method"), str):
-            self._on_msg(msg)
+        if isinstance(msg, list):
+            # Batching existed in exactly one (now superseded) protocol
+            # revision and was removed from the spec in 2025-06-18; no
+            # known client sends it. Refuse visibly instead of dropping
+            # silently, matching the reference SDK's stance.
+            self.send_error(None, INVALID_REQUEST,
+                            "batch requests are not supported")
+        elif isinstance(msg, dict):
+            if isinstance(msg.get("method"), str):
+                self._on_msg(msg)
+            elif msg.get("id") is not None:
+                # recognizable request without a usable method
+                self.send_error(msg.get("id"), INVALID_REQUEST,
+                                "invalid request: 'method' must be a string")
+            else:
+                # unidentifiable payload: JSON-RPC says do not respond
+                self.log("ignoring payload without id or method")
 
     def _on_msg(self, msg: Dict[str, Any]) -> None:
         mcp_id = msg.get("id")

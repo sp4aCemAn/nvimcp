@@ -10,7 +10,10 @@
 # Phase 2 error model (pinned here): -32001 session unavailable (not found,
 # refused, unreachable, gone), -32002 session operation timed out, -32603
 # reserved for nvim-side internal faults (rpc failures, malformed tool
-# replies), standard -32700/-32602/-32601 for client-side framing.
+# replies), standard -32700/-32602/-32601 for client-side framing. Phase 3:
+# batch arrays and id-bearing dicts without a method string are refused
+# with -32600 (never dropped silently); oversized unterminated stdin lines
+# and impossible nvim frames are capped and fatal.
 #
 # Run: python3 tests/statemachine_test.py
 
@@ -246,16 +249,25 @@ def t_malformed_input():
 		client(p, 3, "bogus/method")
 		p.mcp._on_line(b'{"jsonrpc": "2.0", "method": "notifications/initialized"}')
 		p.mcp._on_line(b'{"jsonrpc": "2.0", "id": 9}')
+		p.mcp._on_line(b'[{"jsonrpc": "2.0", "id": 10, "method": "ping"}]')
+		p.mcp._on_line(b'5')
+		p.mcp._on_line(b'{"foo": "bar"}')
 		rs = responses(sink)
 		ok("parse error -32700 with null id",
-			by_id(sink, None) and by_id(sink, None)["error"]["code"] == -32700, rs)
+			by_id(sink, None)["error"]["code"] == -32700, rs)
 		ok("missing name -32602",
 			by_id(sink, 1)["error"]["code"] == -32602 and "params.name" in err_text(by_id(sink, 1)), rs)
 		ok("bad arguments -32602",
 			by_id(sink, 2)["error"]["code"] == -32602 and "must be an object" in err_text(by_id(sink, 2)), rs)
 		ok("unknown method -32601",
 			by_id(sink, 3)["error"]["code"] == -32601 and "bogus/method" in err_text(by_id(sink, 3)), rs)
-		ok("notification and method-less dict ignored", len(rs) == 4 and not p.parked, rs)
+		ok("id-bearing dict without method -> -32600 with its id (Phase 3: no silent drops)",
+			by_id(sink, 9)["error"]["code"] == -32600 and "method" in err_text(by_id(sink, 9)), by_id(sink, 9))
+		ok("batch array -> -32600 refused (removed from the protocol in 2025-06-18)",
+			sum(1 for r in rs if r.get("id") is None and r.get("error", {}).get("code") == -32600
+				and "batch" in err_text(r)) == 1, rs)
+		ok("notification, scalar and id-less/method-less dict ignored; nothing parked",
+			len(rs) == 6 and not p.parked, rs)
 
 
 def t_park_then_replay_in_order():
@@ -280,6 +292,40 @@ def t_park_then_replay_in_order():
 			[r["id"] for r in responses(sink)] == [2, 1], responses(sink))
 		ok("call result json-dumped",
 			by_id(sink, 2)["result"]["content"][0]["text"] == '{"z":1}', responses(sink))
+
+
+def t_stdin_line_cap():
+	# Phase 3: an unterminated client line over the cap is reported and
+	# closes the session instead of buffering forever.
+	with env() as (p, clock, sink):
+		p.mcp.max_line = 64
+		chunks = iter([b"x" * 80])
+		orig_read = mcp_mod.os.read
+		mcp_mod.os.read = lambda fd, n: next(chunks)
+		try:
+			p.mcp.poll()
+		finally:
+			mcp_mod.os.read = orig_read
+		r = by_id(sink, None)
+		ok("oversized unterminated line -> -32600 with exact limit text",
+			r is not None and r["error"]["code"] == -32600 and "exceeds 64 bytes" in err_text(r), r)
+		ok("cap routes through the EOF close path (exit 0)", p.exit_code == 0, p.exit_code)
+
+
+def t_bridge_frame_cap():
+	# Phase 3: an nvim msgpack frame that can never complete over the cap
+	# kills the connection rather than growing rx forever.
+	with env() as (p, clock, sink):
+		s = FakeSocket()
+		establish(p, s)
+		client(p, 1, "tools/call", {"name": "x"})
+		p.bridge.rx_limit = 32
+		s._chunks.append(b"\xdb" + (10 ** 9).to_bytes(4, "big") + b"x" * 40)
+		p.bridge.poll()
+		r = by_id(sink, 1)
+		ok("incomplete frame over cap -> exact death reason at -32001, socket closed",
+			err_text(r) == "nvim msgpack frame exceeded 32 bytes"
+			and r["error"]["code"] == -32001 and not p.bridge.sock, (r, p.bridge.sock))
 
 
 def t_park_dedups_by_mcp_id():
@@ -730,6 +776,8 @@ def main():
 		t_initialize_local,
 		t_initialize_defaults,
 		t_malformed_input,
+		t_stdin_line_cap,
+		t_bridge_frame_cap,
 		t_park_then_replay_in_order,
 		t_park_dedups_by_mcp_id,
 		t_wait_zero_fails_immediately,

@@ -18,6 +18,10 @@ RPC_NOTIFICATION = 2
 NVIMCP_RPC_LUA = "return require('nvimcp.server').rpc(...)"
 HEALTH_LUA = "return require('nvimcp.server').socket_path() ~= nil"
 
+# A msgpack frame from nvim larger than this can never complete (the Lua
+# server caps tool output far below it); treat it as a broken peer.
+NVIM_FRAME_LIMIT = 64 * 1024 * 1024
+
 RequestMeta = Dict[str, Any]
 
 
@@ -46,6 +50,7 @@ class NvimBridge:
         self.sock: Optional[socket.socket] = None
         self.connected: bool = False
         self.rx = bytearray()
+        self.rx_limit = NVIM_FRAME_LIMIT
         self.pending: Dict[int, RequestMeta] = {}
         self.next_msgid: int = 1
 
@@ -101,6 +106,8 @@ class NvimBridge:
             try:
                 value, off = mp_decode_one(self.rx, 0)
             except Incomplete:
+                if len(self.rx) > self.rx_limit:
+                    self.die("nvim msgpack frame exceeded %d bytes" % self.rx_limit)
                 return
             except ValueError as e:
                 self.die("msgpack decode error: %s" % e)
